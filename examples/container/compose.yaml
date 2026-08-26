@@ -4,6 +4,7 @@ services:
       context: ../..
       dockerfile: examples/container/Dockerfile
     read_only: true
+    restart: unless-stopped
     user: "1000:1000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:rw
@@ -17,10 +18,43 @@ services:
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "node", "-e", "const fs=require('node:fs');process.exit(fs.statSync('/run/dsh-docker-services/controller.sock').isSocket()?0:1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+  proxy:
+    build:
+      context: ../..
+      dockerfile: examples/container/Dockerfile
+    entrypoint: ["node", "packages/proxy/lib/src/main.js"]
+    command: ["/etc/dsh-docker-services/proxy.json"]
+    read_only: true
+    restart: unless-stopped
+    user: "1000:1000"
+    network_mode: none
+    volumes:
+      - ../proxy.json:/etc/dsh-docker-services/proxy.json:ro
+      - controller-run:/run/dsh-docker-services:ro
+      - proxy-run:/run/dsh-docker-services-proxy
+    secrets:
+      - proxy-auth-key
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    depends_on:
+      controller:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "const fs=require('node:fs');process.exit(fs.statSync('/run/dsh-docker-services-proxy/proxy.sock').isSocket()?0:1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
 volumes:
   controller-state: {}
   controller-run: {}
   audit-checkpoint: {}
+  proxy-run: {}
 secrets:
   proxy-auth-key:
     file: ./secrets/proxy-auth.key

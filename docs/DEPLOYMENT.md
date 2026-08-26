@@ -23,6 +23,14 @@ restart, and is serialized across controller processes. The exported
 remove any assertion or identity header received from its client before adding
 its own.
 
+The `@dsh-docker-services/proxy` package and `examples/proxy.json` are the
+reference implementation. Run one proxy per Harness trust domain with a fixed
+actor and role. Give it only the shared controller-socket volume, its private
+output-socket volume, and the domain signing key; never mount Docker, service
+secrets, repositories, deployment hooks, or controller state. Mount only the
+proxy output socket into Harness. The example Compose file demonstrates these
+boundaries.
+
 For host installation, install the controller package and systemd example, add
 the dedicated account's narrowly required Docker access, then enable the unit.
 For containers, use the repository-root build context in the Compose example.

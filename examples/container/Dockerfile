@@ -15,7 +15,9 @@ COPY --from=build /app/packages/shared/package.json ./packages/shared/package.js
 COPY --from=build /app/packages/shared/lib ./packages/shared/lib
 COPY --from=build /app/packages/controller/package.json ./packages/controller/package.json
 COPY --from=build /app/packages/controller/lib ./packages/controller/lib
-RUN mkdir -p /run/dsh-docker-services /var/lib/dsh-docker-services /var/lib/dsh-audit-checkpoint && chown -R node:node /run/dsh-docker-services /var/lib/dsh-docker-services /var/lib/dsh-audit-checkpoint
+COPY --from=build /app/packages/proxy/package.json ./packages/proxy/package.json
+COPY --from=build /app/packages/proxy/lib ./packages/proxy/lib
+RUN mkdir -p /run/dsh-docker-services /run/dsh-docker-services-proxy /var/lib/dsh-docker-services /var/lib/dsh-audit-checkpoint && chown -R node:node /run/dsh-docker-services /run/dsh-docker-services-proxy /var/lib/dsh-docker-services /var/lib/dsh-audit-checkpoint
 USER node
 ENTRYPOINT ["node", "packages/controller/lib/src/main.js"]
 CMD ["/etc/dsh-docker-services/controller.json"]

@@ -7,7 +7,7 @@ import {assertDockerSocket, assertTrustedExecutable, LocalDockerAdapter, RemoteD
 import {createServer, HmacProxyAuthenticator} from './server.js'
 import {ensureOwnedRoot, ProtectedLogger, readProtectedFile} from './security.js'
 
-if (process.argv[2] === '--version') { console.log('0.1.0'); process.exit(0) }
+if (process.argv[2] === '--version') { console.log('0.1.1'); process.exit(0) }
 const configPath = process.argv[2] ?? '/etc/dsh-docker-services/controller.json'
 const config = JSON.parse((await readProtectedFile(configPath, 1024 * 1024)).toString('utf8')) as ControllerConfig; assertConfig(config)
 await ensureOwnedRoot(path.dirname(config.socketPath)); await ensureOwnedRoot(path.join(config.stateDir, 'logs')); await assertTrustedExecutable(config.docker.binary)
