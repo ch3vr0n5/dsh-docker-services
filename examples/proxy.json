@@ -7,6 +7,7 @@
   "audience": "example-host",
   "actor": "example-harness",
   "role": "dsh-operator",
+  "controllerConnections": 4,
   "assertionTtlSeconds": 30,
   "socketMode": 384,
   "requestTimeoutMs": 15000,

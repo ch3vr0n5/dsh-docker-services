@@ -2,7 +2,7 @@ import http, {type IncomingHttpHeaders, type IncomingMessage, type ServerRespons
 import type {Controller, Identity} from './controller.js'
 import {HmacProxyAuthenticator, ProtectedLogger, publicMessage, requestId, SafeError} from './security.js'
 
-export interface RequestAuthenticator { authenticate(headers: IncomingHttpHeaders): Promise<Identity> | Identity }
+export interface RequestAuthenticator { authenticate(headers: IncomingHttpHeaders): Promise<Identity> | Identity; proveController?(challenge: string): Promise<string> | string }
 async function body(req: IncomingMessage): Promise<unknown> { const chunks: Buffer[] = []; let bytes = 0; for await (const chunk of req) { bytes += chunk.length; if (bytes > 64 * 1024) throw new SafeError('bad_request', 413, 'request body too large'); chunks.push(Buffer.from(chunk)) } if (!chunks.length) return {}; try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw new SafeError('bad_request', 400, 'invalid JSON body') } }
 function send(res: ServerResponse, status: number, value: unknown, id: string): void { const payload = JSON.stringify(value); res.writeHead(status, {'content-type': 'application/json', 'content-length': Buffer.byteLength(payload), 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-request-id': id}); res.end(payload) }
 export function createServer(controller: Controller, authenticator: RequestAuthenticator, logger: ProtectedLogger): http.Server {
@@ -10,6 +10,12 @@ export function createServer(controller: Controller, authenticator: RequestAuthe
     const id = requestId(); const abort = new AbortController(); req.once('aborted', () => abort.abort()); res.once('close', () => { if (!res.writableEnded) abort.abort() })
     try {
       const identity = await authenticator.authenticate(req.headers); const url = new URL(req.url ?? '/', 'http://localhost')
+      if (req.method === 'GET' && url.pathname === '/v1/proxy-handshake') {
+        const challenge = req.headers['x-dsh-proxy-challenge']
+        if (typeof challenge !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(challenge) || !authenticator.proveController) throw new SafeError('unauthorized', 401, 'controller authentication challenge rejected')
+        const proof = await authenticator.proveController(challenge)
+        const payload = JSON.stringify({protocolVersion: 1, challenge, proof}); res.writeHead(200, {'content-type': 'application/json', 'content-length': Buffer.byteLength(payload), 'cache-control': 'no-store', 'x-content-type-options': 'nosniff'}); res.end(payload); return
+      }
       if (req.method === 'GET' && url.pathname === '/v1/health') return send(res, 200, await controller.health(identity), id)
       if (req.method === 'GET' && url.pathname === '/v1/services') return send(res, 200, await controller.inventory(identity, abort.signal), id)
       if (req.method === 'GET' && url.pathname === '/v1/audit') return send(res, 200, await controller.auditEntries(identity, Number(url.searchParams.get('limit') ?? '100')), id)

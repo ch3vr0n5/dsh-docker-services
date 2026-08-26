@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import {createHmac} from 'node:crypto'
 import {chmod, lstat, mkdir, mkdtemp, readFile, realpath, symlink, truncate, writeFile} from 'node:fs/promises'
 import {execFile} from 'node:child_process'
 import {promisify} from 'node:util'
@@ -8,7 +9,7 @@ import path from 'node:path'
 import test from 'node:test'
 import type {ControllerConfig} from '@dsh-docker-services/shared'
 import {AuditLog, KeyedFileCheckpointSink, LeaseLockManager} from '../src/state.js'
-import {ConflictError, ensureOwnedRoot, HmacProxyAuthenticator, ProtectedLogger, signProxyAssertion} from '../src/security.js'
+import {ConflictError, ensureOwnedRoot, HmacProxyAuthenticator, ProtectedLogger, signControllerProof, signProxyAssertion} from '../src/security.js'
 import {createServer} from '../src/server.js'
 import {CommandExecutionError, runBounded} from '../src/docker.js'
 import type {Controller} from '../src/controller.js'
@@ -21,6 +22,7 @@ test('signed proxy authentication rejects caller role headers, tampering, expiry
   for (const [nonce, iat, exp] of [['nonce-string-time-01', String(now), now + 30], ['nonce-string-time-02', now, String(now + 30)], ['nonce-nan-time-0001', Number.NaN, now + 30], ['nonce-long-life-0001', now, now + 301]] as const) await assert.rejects(() => restarted.authenticate({'x-dsh-proxy-assertion': signProxyAssertion(key, {...claims, nonce, iat, exp} as never)}), /claims/)
 })
 test('authentication rejects short HMAC keys without exposing key material', async () => { const root = await secureRoot(); const keyFile = path.join(root, 'short.key'); const secret = 'short-secret'; await writeFile(keyFile, secret, {mode: 0o600}); await assert.rejects(() => HmacProxyAuthenticator.create({kind: 'hmac-proxy', keyFile, issuer: 'proxy', audience: 'host'}, [], path.join(root, 'replay')), (error: unknown) => error instanceof Error && !error.message.includes(secret) && /32 bytes/.test(error.message)) })
+test('controller endpoint proof is domain-separated and key-authenticated', async () => { const root=await secureRoot();const key=Buffer.from('p'.repeat(32));const keyFile=path.join(root,'proof.key');await writeFile(keyFile,key,{mode:0o600});const auth=await HmacProxyAuthenticator.create({kind:'hmac-proxy',keyFile,issuer:'proxy',audience:'host'},[],path.join(root,'replay'));const challenge='challenge-000000000000000000000000';assert.equal(auth.proveController(challenge),signControllerProof(key,challenge));assert.notEqual(auth.proveController(challenge),createHmac('sha256',key).update(challenge).digest('base64url')) })
 test('audit appends are serialized, fsynced/checkpointed, and truncation is unhealthy', async () => {
   const root = await secureRoot(); const state = path.join(root, 'state'); const checkpointDir = path.join(root, 'offhost'); const keyFile = path.join(root, 'audit.key'); await writeFile(keyFile, 'z'.repeat(32), {mode: 0o600}); const sink = await KeyedFileCheckpointSink.create(path.join(checkpointDir, 'checkpoint.json'), keyFile); const audit = await AuditLog.create(state, sink)
   await Promise.all(Array.from({length: 40}, (_, index) => audit.append({actor: `actor-${index}`, capability: 'services:read', action: 'inventory', outcome: 'ok'}))); const entries = await audit.read(100); assert.deepEqual(entries.map(entry => entry.sequence), Array.from({length: 40}, (_, index) => index + 1)); const checkpoint = await sink.read(); assert.equal(checkpoint?.sequence, 40); const logFile = path.join(state, 'audit', 'events.jsonl'); await truncate(logFile, Math.max(0, (await readFile(logFile)).length - 20)); const reopened = await AuditLog.create(state, await KeyedFileCheckpointSink.create(path.join(checkpointDir, 'checkpoint.json'), keyFile)); assert.equal(reopened.health().healthy, false); assert.match(reopened.health().reason, /truncation|rollback/)

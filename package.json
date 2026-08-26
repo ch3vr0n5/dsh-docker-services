@@ -15,11 +15,14 @@
     "verify:lock": "node scripts/verify-lockfile.mjs",
     "test:consumer": "node scripts/consumer-test.mjs",
     "test:dashboard-089": "node scripts/verify-dashboard-089.mjs",
+    "sbom:generate": "node scripts/sbom.mjs generate",
+    "sbom:verify": "node scripts/sbom.mjs verify",
     "test:container": "node scripts/container-test.mjs",
-    "ci": "npm run verify:lock && npm run typecheck && npm test && npm run pack:all && npm run verify:package && npm run test:consumer"
+    "ci": "npm run verify:lock && npm run typecheck && npm test && npm run pack:all && npm run verify:package && npm run test:consumer && npm run test:dashboard-089"
   },
   "devDependencies": {
     "@types/node": "22.19.0",
+    "pnpm": "11.19.0",
     "typescript": "5.9.3"
   },
   "engines": {"node": "^22.19.0 || >=24.0.0"},

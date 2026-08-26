@@ -1,46 +1,30 @@
-# Dashboard 0.8.9 Compatibility Evidence
+# Dashboard 0.8.9 compatibility evidence
 
-The `dsh-docker-services` plugin is admitted through the exact Dashboard
-release artifact below, not a floating registry version.
+`dsh-docker-services` is admitted by rebuilding Dashboard from its exact source
+commit in a clean temporary checkout, not by trusting a floating registry
+package or an unexplained local tarball.
 
 | Field | Pinned value |
 | --- | --- |
-| Dashboard repository | `https://github.com/ch3vr0n5/dsh-dashboard.git` |
-| Release source commit | `091f351c219c2d5acd775b6f09ccb036c125cf77` |
-| Package identity | `dsh-dashboard@0.8.9` |
-| Artifact SHA-256 | `524527b8139967c0967aaa86be1fbecd2fc6a151f6ffeb681f5510aeee86129b` |
+| Repository | `https://github.com/ch3vr0n5/dsh-dashboard.git` |
+| Source commit | `091f351c219c2d5acd775b6f09ccb036c125cf77` |
+| Package | `dsh-dashboard@0.8.9` |
+| `package.json` SHA-256 | `48298381ca568c53f38cd5eafa43f089a6470e978d8e3a612babe1d861ecd6b8` |
+| `pnpm-lock.yaml` SHA-256 | `d850f6b0558020a53591300be528fae51d7f19ca3f815a22b61223f7084e7a2d` |
+| `pnpm-workspace.yaml` SHA-256 | `7be9e4597f2eca13fe33abfb8691354aa41bb5e698fe4171a45ae265137099d6` |
+| pnpm | `11.19.0`, installed from this repository's integrity-pinned npm lock |
 
-The recorded artifact was made from a clean checkout at the source commit.
-It is intentionally pinned: a different tarball—even one claiming the same
-version—must not be used as compatibility evidence without refreshing this
-record in review.
+The gate verifies the source commit and source-file digests, installs from the
+frozen Dashboard lockfile with dependency lifecycle scripts disabled, builds
+and packs the exact source, verifies package identity, and installs that result
+beside all four local release artifacts in a clean consumer.
 
-## Re-run the admission test
-
-With the recorded artifact available:
-
-```sh
-DSH_DASHBOARD_TARBALL=/path/to/dsh-dashboard-0.8.9.tgz npm run test:dashboard-089
-```
-
-The command verifies the artifact digest and its package identity, then
-installs all four packed `dsh-docker-services` artifacts plus that exact
-Dashboard peer into a fresh temporary consumer and imports the public entry
-points.
-
-## Recreate an artifact deliberately
-
-Only do this to refresh the evidence in a reviewed change:
+Run it after `npm run pack:all`:
 
 ```sh
-git clone https://github.com/ch3vr0n5/dsh-dashboard.git dsh-dashboard-0.8.9
-git -C dsh-dashboard-0.8.9 checkout 091f351c219c2d5acd775b6f09ccb036c125cf77
-git -C dsh-dashboard-0.8.9 diff --exit-code
-corepack pnpm --dir dsh-dashboard-0.8.9 install --frozen-lockfile
-corepack pnpm --dir dsh-dashboard-0.8.9 pack --pack-destination /tmp/dashboard-artifact
-shasum -a 256 /tmp/dashboard-artifact/dsh-dashboard-0.8.9.tgz
+npm run test:dashboard-089
 ```
 
-Record the resulting digest above, review the change, and re-run the admission
-test. This keeps the peer-range assertion (`>=0.7.0 <0.9.0`) backed by a real,
-specific 0.8.9 artifact rather than by an unverified range expansion.
+CI runs this independently on Node 22.19.0 and 24.0.0. Updating the peer
+admission requires a reviewed commit/hash/toolchain refresh here and in the
+gate. This keeps `>=0.7.0 <0.9.0` backed by reproducible exact-source evidence.

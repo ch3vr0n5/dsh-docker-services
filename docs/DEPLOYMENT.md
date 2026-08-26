@@ -13,7 +13,14 @@ socket. The proxy strips identity headers and signs an assertion containing
 maps the signed role to configured capabilities. An mTLS terminator may provide
 the same trusted boundary after validating client certificates.
 
-The proxy sets only `x-dsh-proxy-assertion`. Its value is
+Before accepting Harness traffic, the proxy establishes `controllerConnections`
+(default 4, range 1–16) Unix connections and authenticates the controller on
+each with a fresh HMAC challenge. Those connections are pinned and never
+reconnected. A controller restart intentionally makes the proxy unavailable;
+restart the proxy to create a newly authenticated pool. Keep controller and
+proxy socket parents owned by their service UID and non-group/world-writable.
+
+The proxy sets only `x-dsh-proxy-assertion` on forwarded operations. Its value is
 `base64url(UTF-8 JSON) + "." + base64url(HMAC-SHA256(key, encoded JSON))`.
 `iat`/`exp` are finite integer Unix seconds with at most a five-minute assertion
 lifetime, actor/role/nonce are bounded identifiers, and each nonce is single-use.
@@ -30,6 +37,10 @@ output-socket volume, and the domain signing key; never mount Docker, service
 secrets, repositories, deployment hooks, or controller state. Mount only the
 proxy output socket into Harness. The example Compose file demonstrates these
 boundaries.
+
+Programmatic embedding must use exported `startProxy(config)`. It returns only
+after controller authentication and race-free private-socket binding complete,
+and supplies a bounded `close()` method. There is no public unbound-server API.
 
 For host installation, install the controller package and systemd example, add
 the dedicated account's narrowly required Docker access, then enable the unit.

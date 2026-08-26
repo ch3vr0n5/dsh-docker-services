@@ -22,6 +22,8 @@ export async function durableAtomicWrite(target: string, contents: string | Buff
 
 export type AuthenticatedIdentity = { actor: string; role: string; capabilities: ControllerConfig['roles'][number]['capabilities'] }
 type Assertion = { iss: string; aud: string; sub: string; role: string; iat: number; exp: number; nonce: string }
+const controllerProofDomain = 'dsh-docker-services/controller-proof/v1\n'
+export function signControllerProof(key: Buffer, challenge: string): string { return createHmac('sha256', key).update(controllerProofDomain).update(challenge).digest('base64url') }
 class NonceReplayStore {
   private constructor(private readonly root: string, private readonly file: string, private readonly maximumEntries: number) {}
   static async create(root: string, maximumEntries = 10_000): Promise<NonceReplayStore> { await ensureOwnedRoot(root); return new NonceReplayStore(root, path.join(root, 'nonces.json'), maximumEntries) }
@@ -46,6 +48,7 @@ class NonceReplayStore {
 export class HmacProxyAuthenticator {
   private constructor(private readonly config: AuthConfig, private readonly roles: ControllerConfig['roles'], private readonly key: Buffer, private readonly replay: NonceReplayStore) {}
   static async create(config: AuthConfig, roles: ControllerConfig['roles'], replayRoot: string): Promise<HmacProxyAuthenticator> { const key = await readProtectedFile(config.keyFile, 4096); if (key.length < 32) throw new Error('proxy authentication key must contain at least 32 bytes'); return new HmacProxyAuthenticator(config, roles, key, await NonceReplayStore.create(replayRoot)) }
+  proveController(challenge: string): string { return signControllerProof(this.key, challenge) }
   async authenticate(headers: Record<string, string | string[] | undefined>): Promise<AuthenticatedIdentity> {
     if (headers['x-dsh-actor'] !== undefined || headers['x-dsh-role'] !== undefined) throw new SafeError('unauthorized', 401, 'caller identity headers are forbidden')
     const raw = headers['x-dsh-proxy-assertion']; if (typeof raw !== 'string' || raw.length > 4096) throw new SafeError('unauthorized', 401, 'missing proxy assertion')
