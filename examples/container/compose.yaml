@@ -6,6 +6,7 @@ services:
     read_only: true
     restart: unless-stopped
     user: "1000:1000"
+    network_mode: none
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:rw
       - ../controller.json:/etc/dsh-docker-services/controller.json:ro

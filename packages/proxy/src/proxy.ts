@@ -1,5 +1,5 @@
 import {createHmac, randomBytes} from 'node:crypto'
-import {lstat, mkdir, open, readFile, rm} from 'node:fs/promises'
+import {lstat, mkdir, open, rm} from 'node:fs/promises'
 import http, {type IncomingMessage, type ServerResponse} from 'node:http'
 import path from 'node:path'
 import {patterns} from '@dsh-docker-services/shared'
@@ -23,12 +23,46 @@ export type ProxyConfig = {
 const absolute = (value: unknown): value is string => typeof value === 'string' && patterns.absolute.test(value) && path.resolve(value) === value
 const bounded = (value: unknown, min: number, max: number): value is number => Number.isInteger(value) && Number(value) >= min && Number(value) <= max
 
-async function noSymlinkComponents(target: string): Promise<void> {
-  let component = path.parse(target).root
-  for (const part of target.slice(component.length).split(path.sep).filter(Boolean)) { component = path.join(component, part); const info = await lstat(component).catch(error => { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error }); if (info?.isSymbolicLink()) throw new Error('proxy path contains a symlink') }
+function owned(info: {uid: number}): boolean { return typeof process.getuid !== 'function' || info.uid === 0 || info.uid === process.getuid() }
+
+function trustedDirectory(info: {isDirectory(): boolean; isSymbolicLink(): boolean; mode: number; uid: number}): boolean {
+  if (!info.isDirectory() || info.isSymbolicLink() || !owned(info)) return false
+  if ((info.mode & 0o022) === 0) return true
+  // A root-owned sticky directory (for example /tmp) protects its child entries
+  // from replacement by other users.  Non-sticky writable ancestors do not.
+  return info.uid === 0 && (info.mode & 0o1000) !== 0
 }
 
-function owned(info: {uid: number}): boolean { return typeof process.getuid !== 'function' || info.uid === 0 || info.uid === process.getuid() }
+async function trustedParents(target: string): Promise<void> {
+  const directory = path.dirname(target)
+  let component = path.parse(directory).root
+  for (const part of directory.slice(component.length).split(path.sep).filter(Boolean)) {
+    const info = await lstat(component)
+    if (!trustedDirectory(info)) throw new Error('proxy path parent is insecure')
+    component = path.join(component, part)
+  }
+  const info = await lstat(component)
+  if (!trustedDirectory(info)) throw new Error('proxy path parent is insecure')
+}
+
+type SocketIdentity = {dev: number; ino: number; uid: number; mode: number}
+
+function socketIdentity(info: {dev: number; ino: number; uid: number; mode: number}): SocketIdentity {
+  return {dev: info.dev, ino: info.ino, uid: info.uid, mode: info.mode}
+}
+
+function sameSocket(left: SocketIdentity, right: SocketIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.uid === right.uid && left.mode === right.mode
+}
+
+async function trustedControllerSocket(file: string, expected?: SocketIdentity): Promise<SocketIdentity> {
+  await trustedParents(file)
+  const info = await lstat(file)
+  if (!info.isSocket() || info.isSymbolicLink() || !owned(info) || (info.mode & 0o022) !== 0) throw new Error('controller socket is insecure')
+  const identity = socketIdentity(info)
+  if (expected && !sameSocket(identity, expected)) throw new Error('controller socket changed after proxy startup')
+  return identity
+}
 
 export function parseProxyConfig(value: unknown): ProxyConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid proxy configuration')
@@ -46,7 +80,8 @@ export function parseProxyConfig(value: unknown): ProxyConfig {
 }
 
 async function protectedKey(file: string): Promise<Buffer> {
-  await noSymlinkComponents(file)
+  await trustedParents(file)
+  if ((await lstat(file)).isSymbolicLink()) throw new Error('proxy key file is a symlink')
   const handle = await open(file, (await import('node:fs')).constants.O_RDONLY | (await import('node:fs')).constants.O_NOFOLLOW)
   try {
     const stat = await handle.stat()
@@ -76,29 +111,40 @@ async function collect(req: IncomingMessage, maximum: number): Promise<Buffer> {
 
 export async function createProxy(configInput: ProxyConfig): Promise<http.Server> {
   const config = parseProxyConfig(configInput)
+  const requestTimeoutMs = config.requestTimeoutMs ?? 15_000
   const key = await protectedKey(config.keyFile)
-  await noSymlinkComponents(path.dirname(config.socketPath))
   await mkdir(path.dirname(config.socketPath), {recursive: true, mode: 0o700})
-  await noSymlinkComponents(path.dirname(config.socketPath))
-  const parent = await lstat(path.dirname(config.socketPath)); if (!parent.isDirectory() || !owned(parent) || (parent.mode & 0o022) !== 0) throw new Error('proxy socket parent is insecure')
-  await noSymlinkComponents(config.controllerSocketPath)
-  const controller = await lstat(config.controllerSocketPath); if (!controller.isSocket() || !owned(controller) || (controller.mode & 0o002) !== 0) throw new Error('controller socket is insecure')
+  await trustedParents(config.socketPath)
+  const controllerIdentity = await trustedControllerSocket(config.controllerSocketPath)
   const existing = await lstat(config.socketPath).catch(() => undefined)
   if (existing && (!existing.isSocket() || !owned(existing))) throw new Error('proxy socket path exists and is not an owned socket')
   if (existing) await rm(config.socketPath)
-  return http.createServer(async (clientRequest, clientResponse) => {
+  const server = http.createServer(async (clientRequest, clientResponse) => {
+    let upstream: http.ClientRequest | undefined
+    let expired = false
+    const expire = () => {
+      if (expired) return
+      expired = true
+      const error = Object.assign(new Error('proxy timeout'), {status: 408})
+      upstream?.destroy(error)
+      clientRequest.destroy(error)
+    }
+    const timer = setTimeout(expire, requestTimeoutMs); timer.unref()
     try {
       const body = await collect(clientRequest, config.maxRequestBytes ?? 64 * 1024)
+      if (expired) return
+      await trustedControllerSocket(config.controllerSocketPath, controllerIdentity)
+      if (expired) return
       await new Promise<void>((resolve, reject) => {
         let responseBytes = 0; let settled = false
         const finish = (error?: Error) => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve() }
         const headers: Record<string, string | number> = {'x-dsh-proxy-assertion': assertion(key, config)}
         if (body.length) { headers['content-type'] = 'application/json'; headers['content-length'] = body.length }
-        const upstream = http.request({socketPath: config.controllerSocketPath, path: clientRequest.url ?? '/', method: clientRequest.method ?? 'GET', headers}, response => {
+        upstream = http.request({socketPath: config.controllerSocketPath, path: clientRequest.url ?? '/', method: clientRequest.method ?? 'GET', headers}, response => {
           const chunks: Buffer[] = []; let overflow = false
           response.on('data', chunk => {
             responseBytes += chunk.length
-            if (responseBytes > (config.maxResponseBytes ?? 2 * 1024 * 1024)) { overflow = true; response.removeAllListeners('data'); response.resume(); upstream.destroy(); finish(new Error('response too large')) }
+            if (responseBytes > (config.maxResponseBytes ?? 2 * 1024 * 1024)) { overflow = true; response.removeAllListeners('data'); response.resume(); upstream?.destroy(); finish(new Error('response too large')) }
             else chunks.push(Buffer.from(chunk))
           })
           response.on('end', () => {
@@ -109,11 +155,18 @@ export async function createProxy(configInput: ProxyConfig): Promise<http.Server
           })
           response.on('error', error => finish(error))
         })
-        const timer = setTimeout(() => upstream.destroy(new Error('proxy timeout')), config.requestTimeoutMs ?? 15_000); timer.unref()
         upstream.on('error', finish)
-        clientRequest.once('aborted', () => upstream.destroy(new Error('client aborted')))
+        clientRequest.once('aborted', () => upstream?.destroy(new Error('client aborted')))
         if (body.length) upstream.end(body); else upstream.end()
       })
-    } catch (error) { fail(clientResponse, (error as {status?: number}).status ?? 502) }
+    } catch (error) {
+      if (!clientResponse.destroyed && !clientResponse.writableEnded) fail(clientResponse, (error as {status?: number}).status ?? 502)
+    } finally { clearTimeout(timer) }
   })
+  // Header drips never reach the request callback.  Configure the server-level
+  // timeout too, while the per-request deadline above covers an active body.
+  server.headersTimeout = requestTimeoutMs
+  server.requestTimeout = requestTimeoutMs
+  server.setTimeout(requestTimeoutMs, socket => socket.destroy())
+  return server
 }
