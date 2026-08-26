@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    {"path": "packages/shared"},
+    {"path": "packages/controller"},
+    {"path": "packages/plugin"}
+  ]
+}

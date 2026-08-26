@@ -1,0 +1,11 @@
+{
+  "name": "@dsh-docker-services/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {".": {"types": "./lib/index.d.ts", "default": "./lib/index.js"}},
+  "scripts": {"build": "tsc -b"},
+  "license": "Apache-2.0"
+}

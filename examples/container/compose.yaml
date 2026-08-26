@@ -1,0 +1,19 @@
+services:
+  controller:
+    build: .
+    read_only: true
+    user: "1000:1000"
+    environment:
+      DSH_DOCKER_SERVICES_CONFIG: /etc/dsh-docker-services/controller.json
+      DSH_DOCKER_SERVICES_SOCKET: /run/dsh-docker-services/controller.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - ../controller.json:/etc/dsh-docker-services/controller.json:ro
+      - controller-state:/var/lib/dsh-docker-services
+      - controller-run:/run/dsh-docker-services
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+volumes:
+  controller-state: {}
+  controller-run: {}

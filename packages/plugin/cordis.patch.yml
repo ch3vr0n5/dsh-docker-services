@@ -1,0 +1,7 @@
+- plugins:
+    - id: dsh-docker-services
+      name: dsh-docker-services
+      config:
+        socketPath: /run/dsh-docker-services/controller.sock
+        actor: dsh-plugin
+        role: dsh-viewer

@@ -1,0 +1,9 @@
+import http from 'node:http'
+export type RequestOptions = { method?: string; body?: unknown; signal?: AbortSignal }
+export type ControllerTransport = { request<T>(route: string, options?: RequestOptions): Promise<T> }
+export class UnixSocketTransport implements ControllerTransport {
+  constructor(private readonly socketPath: string, private readonly actor = 'dsh-plugin', private readonly role = 'dsh-viewer') {}
+  request<T>(route: string, options: RequestOptions = {}): Promise<T> { return new Promise((resolve, reject) => { const payload = options.body === undefined ? undefined : JSON.stringify(options.body); const req = http.request({socketPath: this.socketPath, path: route, method: options.method ?? 'GET', headers: {...(payload ? {'content-type': 'application/json', 'content-length': Buffer.byteLength(payload)} : {}), 'x-dsh-actor': this.actor, 'x-dsh-role': this.role}, signal: options.signal}, response => { const chunks: Buffer[] = []; response.on('data', value => chunks.push(Buffer.from(value))); response.on('end', () => { try { const value = JSON.parse(Buffer.concat(chunks).toString('utf8')); if ((response.statusCode ?? 500) >= 400) reject(new Error(String(value.error ?? 'controller request failed'))); else resolve(value as T) } catch { reject(new Error('controller returned invalid JSON')) } }) }); req.on('error', reject); if (payload) req.write(payload); req.end() }) }
+}
+/** Converts all controller failures to a bounded RPC error so a failed privileged dependency cannot crash DSH. */
+export async function contained<T>(request: Promise<T>): Promise<{ok: true; value: T} | {ok: false; error: {code: 'internal'; message: string; details: {}}}> { try { return {ok: true, value: await request} } catch (error) { return {ok: false, error: {code: 'internal', message: error instanceof Error ? error.message.slice(0, 512) : 'controller request failed', details: {}}} } }

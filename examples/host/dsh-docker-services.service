@@ -1,0 +1,23 @@
+[Unit]
+Description=DeepSeek Harness Docker Services controller
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=dsh-controller
+Group=dsh-controller
+Environment=DSH_DOCKER_SERVICES_CONFIG=/etc/dsh-docker-services/controller.json
+Environment=DSH_DOCKER_SERVICES_SOCKET=/run/dsh-docker-services/controller.sock
+ExecStart=/usr/local/bin/dsh-docker-services-controller
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/dsh-docker-services /run/dsh-docker-services
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

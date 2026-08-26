@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "instance": "example-host",
+  "docker": {"kind": "local"},
+  "stateDir": "/var/lib/dsh-docker-services",
+  "secretRoot": "/var/lib/dsh-docker-services/secrets",
+  "roles": [
+    {"name": "dsh-viewer", "capabilities": ["services:read", "secrets:status"]},
+    {"name": "dsh-operator", "capabilities": ["services:read", "services:operate", "deploy:execute", "parameters:write", "secrets:status", "secrets:write", "secrets:test", "audit:read"]}
+  ],
+  "services": [
+    {
+      "name": "example-api",
+      "displayName": "Example API",
+      "containers": ["example-api"],
+      "url": "https://example-api.internal.example",
+      "actions": ["inventory", "logs", "start", "stop", "restart", "deploy", "parameters:write", "secret:status", "secret:set", "secret:rotate", "secret:test"],
+      "parameters": [{"key": "LOG_LEVEL", "label": "Log level", "type": "enum", "enum": ["info", "warn", "error"], "default": "info"}],
+      "deploy": {"hook": "/usr/local/lib/dsh-docker-services/deploy-example-api", "repositories": ["https://git.example.invalid/team/example-api.git"], "branches": ["release"], "requireImageDigest": true},
+      "secrets": [{"id": "api-token", "label": "API token", "target": "/var/lib/dsh-docker-services/secrets/example-api-token", "minLength": 16, "testHook": "/usr/local/lib/dsh-docker-services/test-example-api-token"}]
+    }
+  ]
+}

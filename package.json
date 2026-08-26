@@ -1,0 +1,24 @@
+{
+  "name": "dsh-docker-services",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Guarded Docker operations for DeepSeek Harness",
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "clean": "node -e \"const fs=require('node:fs');for(const p of ['packages/shared/lib','packages/controller/lib','packages/plugin/lib','packages/shared/tsconfig.tsbuildinfo','packages/controller/tsconfig.tsbuildinfo','packages/plugin/tsconfig.tsbuildinfo','artifacts'])fs.rmSync(p,{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -b --pretty false",
+    "typecheck": "tsc -b --pretty false",
+    "test": "npm run build && node --test packages/controller/lib/test/*.test.js packages/plugin/lib/test/*.test.js",
+    "pack:plugin": "node -e \"require('node:fs').mkdirSync('artifacts',{recursive:true})\" && npm pack --workspace dsh-docker-services --pack-destination artifacts",
+    "verify:package": "node scripts/verify-package.mjs",
+    "ci": "npm run typecheck && npm test && npm run pack:plugin && npm run verify:package"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.0",
+    "typescript": "5.9.3"
+  },
+  "engines": {"node": "^22.19.0 || >=24.0.0"},
+  "packageManager": "npm@11.12.1",
+  "license": "Apache-2.0"
+}
