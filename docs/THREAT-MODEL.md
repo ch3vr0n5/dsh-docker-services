@@ -37,7 +37,10 @@ modify those or control Docker is already privileged and outside this boundary.
   checkpoint file on independently retained or off-host storage. Startup/health
   detect truncation, rollback, or corruption.
 - Public errors are bounded and opaque. Detailed errors go only to a protected,
-  bounded, redacted log and are correlated by request ID.
+  bounded, redacted log and are correlated by request ID. Failed child-process
+  stdout/stderr content is never copied into errors or logs, even after
+  redaction; diagnostics contain only operation/classification, exit/signal,
+  bounded byte counts, and a random execution correlation ID.
 
 ## Residual risks
 

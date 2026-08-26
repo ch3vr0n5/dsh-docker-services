@@ -1,29 +1,34 @@
 import { spawn } from 'node:child_process'
+import {randomUUID} from 'node:crypto'
 import { lstat } from 'node:fs/promises'
 import https from 'node:https'
 import type { ContainerView, ControllerConfig, DeployRequest, DeployResult, DockerConfig, ServiceDefinition } from '@dsh-docker-services/shared'
-import { assertDeployResult, patterns, redact } from '@dsh-docker-services/shared'
+import { assertDeployResult, patterns } from '@dsh-docker-services/shared'
 import { assertNoSymlinkComponents, minimalEnv, readProtectedFile, SafeError } from './security.js'
 
-type RunOptions = { timeoutMs?: number; maxOutputBytes?: number; maxErrorBytes?: number; signal?: AbortSignal; input?: string; env?: NodeJS.ProcessEnv }
-export class CommandExecutionError extends Error {
-  readonly protectedDetails!: string
-  constructor(readonly commandCode: 'spawn_failed' | 'stdin_failed' | 'exit_nonzero', details: string) { super(`trusted executable failed: ${commandCode}`); this.name = 'CommandExecutionError'; Object.defineProperty(this, 'protectedDetails', {value: redact(details), enumerable: false, writable: false}) }
+export type CommandOperation = 'generic' | 'docker' | 'deploy-hook' | 'secret-test-hook' | 'ssh-transport'
+export type CommandFailureClassification = 'spawn_error' | 'stdin_error' | 'nonzero_exit' | 'timeout' | 'cancelled' | 'stdout_limit' | 'stderr_limit' | 'input_limit'
+export type CommandFailureDetails = {correlationId: string; operation: CommandOperation; classification: CommandFailureClassification; exitCode: number | null; signal: NodeJS.Signals | null; stdoutBytes: number; stderrBytes: number}
+type RunOptions = { timeoutMs?: number; maxOutputBytes?: number; maxErrorBytes?: number; signal?: AbortSignal; input?: string; env?: NodeJS.ProcessEnv; operation?: CommandOperation }
+export class CommandExecutionError extends SafeError {
+  readonly protectedDetails!: Readonly<CommandFailureDetails>
+  constructor(readonly commandCode: CommandFailureClassification, details: CommandFailureDetails) { super('unavailable', 503, `trusted executable failed: ${commandCode}`); this.name = 'CommandExecutionError'; Object.defineProperty(this, 'protectedDetails', {value: Object.freeze({...details}), enumerable: false, writable: false}) }
 }
 export async function runBounded(file: string, args: string[], options: RunOptions = {}): Promise<{stdout: string; stderr: string}> {
   if (!patterns.absolute.test(file)) throw new Error('executable must be an absolute path')
   const timeoutMs = Math.max(100, Math.min(60 * 60_000, options.timeoutMs ?? 30_000)); const maxOutput = Math.max(1024, Math.min(8 * 1024 * 1024, options.maxOutputBytes ?? 1024 * 1024)); const maxError = Math.max(1024, Math.min(64 * 1024, options.maxErrorBytes ?? 16 * 1024))
   return new Promise((resolve, reject) => {
-    let settled = false; let outputBytes = 0; let errorBytes = 0; let timer: NodeJS.Timeout | undefined; const stdout: Buffer[] = []; const stderr: Buffer[] = []
+    let settled = false; let outputBytes = 0; let errorBytes = 0; let timer: NodeJS.Timeout | undefined; const stdout: Buffer[] = []; const stderr: Buffer[] = []; const correlationId = randomUUID(); const operation = options.operation ?? 'generic'
     const child = spawn(file, args, {stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: options.env ?? minimalEnv()})
     const finish = (error?: Error) => { if (settled) return; settled = true; if (timer) clearTimeout(timer); options.signal?.removeEventListener('abort', abort); if (error) reject(error); else resolve({stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8')}) }
-    const abort = () => { child.kill('SIGKILL'); finish(new SafeError('unavailable', 503, 'operation cancelled')) }; options.signal?.addEventListener('abort', abort, {once: true})
-    timer = setTimeout(() => { child.kill('SIGKILL'); finish(new SafeError('unavailable', 503, 'operation timed out')) }, timeoutMs); timer.unref(); if (options.signal?.aborted) abort()
-    child.stdout.on('data', chunk => { outputBytes += chunk.length; if (outputBytes > maxOutput) { child.kill('SIGKILL'); finish(new SafeError('unavailable', 503, 'operation output exceeded bound')) } else stdout.push(Buffer.from(chunk)) })
-    child.stderr.on('data', chunk => { errorBytes += chunk.length; if (errorBytes <= maxError) stderr.push(Buffer.from(chunk)) })
-    child.on('error', error => finish(new CommandExecutionError('spawn_failed', `code=${(error as NodeJS.ErrnoException).code ?? 'unknown'}`))); child.on('close', code => { if (code !== 0) finish(new CommandExecutionError('exit_nonzero', `exit=${String(code)} stderr=${Buffer.concat(stderr).toString('utf8')}`)); else finish() })
-    child.stdin.on('error', error => { const code = (error as NodeJS.ErrnoException).code; if (code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED') return; child.kill('SIGKILL'); finish(new CommandExecutionError('stdin_failed', `code=${code ?? 'unknown'}`)) })
-    if (options.input !== undefined) { if (Buffer.byteLength(options.input) > 64 * 1024) return abort(); child.stdin.end(options.input) } else child.stdin.end()
+    const fail = (classification: CommandFailureClassification, exitCode: number | null = null, signal: NodeJS.Signals | null = null) => finish(new CommandExecutionError(classification, {correlationId, operation, classification, exitCode, signal, stdoutBytes: outputBytes, stderrBytes: errorBytes}))
+    const abort = () => { child.kill('SIGKILL'); fail('cancelled') }; options.signal?.addEventListener('abort', abort, {once: true})
+    timer = setTimeout(() => { child.kill('SIGKILL'); fail('timeout') }, timeoutMs); timer.unref(); if (options.signal?.aborted) abort()
+    child.stdout.on('data', chunk => { outputBytes = Math.min(maxOutput + 1, outputBytes + chunk.length); if (outputBytes > maxOutput) { child.kill('SIGKILL'); fail('stdout_limit') } else stdout.push(Buffer.from(chunk)) })
+    child.stderr.on('data', chunk => { errorBytes = Math.min(maxError + 1, errorBytes + chunk.length); if (errorBytes > maxError) { child.kill('SIGKILL'); fail('stderr_limit') } else stderr.push(Buffer.from(chunk)) })
+    child.on('error', () => fail('spawn_error')); child.on('close', (code, signal) => { if (code !== 0) fail('nonzero_exit', code, signal); else finish() })
+    child.stdin.on('error', error => { const code = (error as NodeJS.ErrnoException).code; if (code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED') return; child.kill('SIGKILL'); fail('stdin_error') })
+    if (options.input !== undefined) { if (Buffer.byteLength(options.input) > 64 * 1024) { child.kill('SIGKILL'); return fail('input_limit') }; child.stdin.end(options.input) } else child.stdin.end()
   })
 }
 export async function assertTrustedExecutable(file: string): Promise<void> { await assertNoSymlinkComponents(file); const info = await lstat(file); if (!info.isFile() || info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o022) !== 0) throw new Error(`untrusted executable rejected: ${file}`) }
@@ -42,17 +47,17 @@ function verifyDeployedContainers(service: ServiceDefinition, containers: Contai
 }
 export class LocalDockerAdapter implements DockerAdapter {
   constructor(private readonly config: DockerConfig) {}
-  private run(args: string[], options: RunOptions = {}) { return runBounded(this.config.binary, ['--host', this.config.host, ...args], {...options, env: minimalEnv({DOCKER_HOST: this.config.host})}) }
+  private run(args: string[], options: RunOptions = {}) { return runBounded(this.config.binary, ['--host', this.config.host, ...args], {...options, operation: 'docker', env: minimalEnv({DOCKER_HOST: this.config.host})}) }
   async inventory(signal?: AbortSignal): Promise<ContainerView[]> { const ids = (await this.run(['ps', '--all', '--quiet'], {signal, maxOutputBytes: 1024 * 1024})).stdout.trim().split(/\s+/).filter(Boolean); if (ids.length > 2048) throw new Error('Docker inventory exceeds container bound'); if (!ids.length) return []; const raw = JSON.parse((await this.run(['inspect', ...ids], {signal, maxOutputBytes: 8 * 1024 * 1024})).stdout); const byName = new Map<string, any>(); try { const stats = (await this.run(['stats', '--no-stream', '--format', '{{json .}}', ...ids], {signal, maxOutputBytes: 2 * 1024 * 1024})).stdout; for (const line of stats.split('\n').filter(Boolean)) { const value = JSON.parse(line); byName.set(String(value.Name), value) } } catch {} return raw.map((item: any) => normalize(item, byName.get(String(item.Name ?? '').replace(/^\//, '')))) }
   async action(service: ServiceDefinition, action: 'start' | 'stop' | 'restart', signal?: AbortSignal): Promise<void> { await this.run([action, ...service.containers], {signal}) }
   async logs(service: ServiceDefinition, tail: number, signal?: AbortSignal): Promise<string> { return (await this.run(['logs', '--tail', String(tail), service.containers[0]!], {signal, maxOutputBytes: 1024 * 1024})).stdout }
-  async deploy(service: ServiceDefinition, request: DeployRequest, signal?: AbortSignal): Promise<DeployResult> { if (!service.deploy) throw new Error('deployment is not configured'); await assertTrustedExecutable(service.deploy.hook); const output = await runBounded(service.deploy.hook, ['--service', service.name, '--repo', request.repo, '--branch', request.branch, '--sha', request.sha], {signal, timeoutMs: service.deploy.timeoutMs ?? 30 * 60_000, maxOutputBytes: 64 * 1024, env: minimalEnv({DOCKER_HOST: this.config.host})}); let result: unknown; try { result = JSON.parse(output.stdout) } catch { throw new Error('deploy hook returned invalid JSON') } assertDeployResult(result, request); verifyDeployedContainers(service, await this.inventory(signal), result.imageDigest); return result }
+  async deploy(service: ServiceDefinition, request: DeployRequest, signal?: AbortSignal): Promise<DeployResult> { if (!service.deploy) throw new Error('deployment is not configured'); await assertTrustedExecutable(service.deploy.hook); const output = await runBounded(service.deploy.hook, ['--service', service.name, '--repo', request.repo, '--branch', request.branch, '--sha', request.sha], {signal, operation: 'deploy-hook', timeoutMs: service.deploy.timeoutMs ?? 30 * 60_000, maxOutputBytes: 64 * 1024, env: minimalEnv({DOCKER_HOST: this.config.host})}); let result: unknown; try { result = JSON.parse(output.stdout) } catch { throw new Error('deploy hook returned invalid JSON') } assertDeployResult(result, request); verifyDeployedContainers(service, await this.inventory(signal), result.imageDigest); return result }
 }
 export type RemoteCall = {operation: 'inventory'} | {operation: 'action'; service: string; action: 'start' | 'stop' | 'restart'} | {operation: 'logs'; service: string; tail: number} | {operation: 'deploy'; service: string; deployment: DeployRequest}
 export interface RemoteTransport { call(request: RemoteCall, signal?: AbortSignal): Promise<unknown> }
 export class SshJsonTransport implements RemoteTransport {
   constructor(private readonly config: NonNullable<DockerConfig['ssh']>) {}
-  async call(request: RemoteCall, signal?: AbortSignal): Promise<unknown> { if (!/^[a-zA-Z0-9.-]+$/.test(this.config.host) || !/^[a-z_][a-z0-9_-]*$/i.test(this.config.user)) throw new Error('invalid constrained SSH configuration'); const args = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', `UserKnownHostsFile=${this.config.knownHosts}`, '-o', 'ClearAllForwardings=yes', '-o', 'PermitLocalCommand=no', '-p', String(this.config.port ?? 22), '-l', this.config.user, ...(this.config.identityFile ? ['-i', this.config.identityFile] : []), '--', this.config.host, this.config.helper]; const result = await runBounded(this.config.binary, args, {signal, input: JSON.stringify(request), timeoutMs: this.config.timeoutMs ?? 60_000, maxOutputBytes: this.config.maxOutputBytes ?? 1024 * 1024}); let response: any; try { response = JSON.parse(result.stdout) } catch { throw new Error('remote SSH adapter returned invalid JSON') } if (response?.ok !== true) throw new Error('remote SSH adapter rejected request'); return response.value }
+  async call(request: RemoteCall, signal?: AbortSignal): Promise<unknown> { if (!/^[a-zA-Z0-9.-]+$/.test(this.config.host) || !/^[a-z_][a-z0-9_-]*$/i.test(this.config.user)) throw new Error('invalid constrained SSH configuration'); const args = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', `UserKnownHostsFile=${this.config.knownHosts}`, '-o', 'ClearAllForwardings=yes', '-o', 'PermitLocalCommand=no', '-p', String(this.config.port ?? 22), '-l', this.config.user, ...(this.config.identityFile ? ['-i', this.config.identityFile] : []), '--', this.config.host, this.config.helper]; const result = await runBounded(this.config.binary, args, {signal, operation: 'ssh-transport', input: JSON.stringify(request), timeoutMs: this.config.timeoutMs ?? 60_000, maxOutputBytes: this.config.maxOutputBytes ?? 1024 * 1024}); let response: any; try { response = JSON.parse(result.stdout) } catch { throw new Error('remote SSH adapter returned invalid JSON') } if (response?.ok !== true) throw new Error('remote SSH adapter rejected request'); return response.value }
 }
 export class TlsJsonTransport implements RemoteTransport {
   constructor(private readonly config: NonNullable<DockerConfig['tls']>) {}

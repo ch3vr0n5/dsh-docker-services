@@ -65,6 +65,17 @@ export class HmacProxyAuthenticator {
 }
 export function signProxyAssertion(key: Buffer, assertion: Assertion): string { const encoded = Buffer.from(JSON.stringify(assertion)).toString('base64url'); return `${encoded}.${createHmac('sha256', key).update(encoded).digest('base64url')}` }
 
+const commandOperations = new Set(['generic', 'docker', 'deploy-hook', 'secret-test-hook', 'ssh-transport'])
+const commandClassifications = new Set(['spawn_error', 'stdin_error', 'nonzero_exit', 'timeout', 'cancelled', 'stdout_limit', 'stderr_limit', 'input_limit'])
+function safeCommandDetails(error: unknown): string {
+  if (!error || typeof error !== 'object' || !('protectedDetails' in error)) return ''
+  const details = (error as {protectedDetails?: unknown}).protectedDetails
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return ''
+  const value = details as Record<string, unknown>
+  const keys = Object.keys(value).sort().join(',')
+  const valid = keys === 'classification,correlationId,exitCode,operation,signal,stderrBytes,stdoutBytes' && typeof value.correlationId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.correlationId) && typeof value.operation === 'string' && commandOperations.has(value.operation) && typeof value.classification === 'string' && commandClassifications.has(value.classification) && (value.exitCode === null || (Number.isInteger(value.exitCode) && Number(value.exitCode) >= 0 && Number(value.exitCode) <= 255)) && (value.signal === null || (typeof value.signal === 'string' && /^SIG[A-Z0-9]{1,12}$/.test(value.signal))) && Number.isInteger(value.stdoutBytes) && Number(value.stdoutBytes) >= 0 && Number(value.stdoutBytes) <= 8 * 1024 * 1024 + 1 && Number.isInteger(value.stderrBytes) && Number(value.stderrBytes) >= 0 && Number(value.stderrBytes) <= 64 * 1024 + 1
+  return valid ? JSON.stringify(value) : ''
+}
 async function tightenProtectedLog(file: string): Promise<void> {
   try {
     await assertNoSymlinkComponents(file)
@@ -75,5 +86,5 @@ async function tightenProtectedLog(file: string): Promise<void> {
 export class ProtectedLogger {
   private queue = Promise.resolve()
   constructor(private readonly file: string, private readonly maxBytes = 16 * 1024 * 1024) {}
-  log(request: string, error: unknown): Promise<void> { const protectedDetails = error && typeof error === 'object' && 'protectedDetails' in error ? String((error as {protectedDetails: unknown}).protectedDetails) : ''; const source = error instanceof Error ? `${error.name}: ${error.message}${protectedDetails ? ` ${protectedDetails}` : ''}` : String(error); const line = JSON.stringify({at: new Date().toISOString(), request, error: redact(source)}) + '\n'; const task = this.queue.then(async () => { await assertNoSymlinkComponents(this.file); await tightenProtectedLog(this.file); await tightenProtectedLog(`${this.file}.1`); try { if ((await lstat(this.file)).size + Buffer.byteLength(line) > this.maxBytes) await rename(this.file, `${this.file}.1`) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }; const handle = await open(this.file, fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW, 0o600); try { const info = await handle.stat(); if (!info.isFile() || (expectedUid !== undefined && info.uid !== expectedUid)) throw new Error('unsafe protected log file'); await handle.chmod(0o600); await handle.write(line); await handle.sync() } finally { await handle.close() } }); this.queue = task.catch(() => undefined); return task }
+  log(request: string, error: unknown): Promise<void> { const protectedDetails = safeCommandDetails(error); const source = error instanceof Error ? `${error.name}: ${error.message}${protectedDetails ? ` ${protectedDetails}` : ''}` : String(error); const line = JSON.stringify({at: new Date().toISOString(), request, error: redact(source)}) + '\n'; const task = this.queue.then(async () => { await assertNoSymlinkComponents(this.file); await tightenProtectedLog(this.file); await tightenProtectedLog(`${this.file}.1`); try { if ((await lstat(this.file)).size + Buffer.byteLength(line) > this.maxBytes) await rename(this.file, `${this.file}.1`) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }; const handle = await open(this.file, fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW, 0o600); try { const info = await handle.stat(); if (!info.isFile() || (expectedUid !== undefined && info.uid !== expectedUid)) throw new Error('unsafe protected log file'); await handle.chmod(0o600); await handle.write(line); await handle.sync() } finally { await handle.close() } }); this.queue = task.catch(() => undefined); return task }
 }
