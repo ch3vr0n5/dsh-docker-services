@@ -1,8 +1,10 @@
 # Releasing
 
 1. Update versions and release notes.
-2. Install npm 11.12.1, run `npm ci --ignore-scripts`, then `npm run ci` on the
-   pinned Node versions. `devEngines` fails closed on another npm version.
+2. Install npm 11.12.1, run `npm run verify:lock`, `npm ci --ignore-scripts`, then
+   `npm run ci` on the pinned Node versions. Lock verification requires a
+   registry URL and SHA-512 integrity for every fetched package; `devEngines`
+   fails closed on another npm version.
 3. Run `npm run test:container`. Inspect all three artifacts; each must contain
    compiled entrypoints and the full license, with no tests, `.env`, state,
    node_modules, configuration, or fixture secret. The clean consumer test must

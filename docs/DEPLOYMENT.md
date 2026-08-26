@@ -15,10 +15,13 @@ the same trusted boundary after validating client certificates.
 
 The proxy sets only `x-dsh-proxy-assertion`. Its value is
 `base64url(UTF-8 JSON) + "." + base64url(HMAC-SHA256(key, encoded JSON))`.
-`iat`/`exp` are Unix seconds, actor/role/nonce are bounded identifiers, and each
-nonce is single-use. The exported `signProxyAssertion` helper is the reference
-implementation. The proxy must remove any assertion or identity header received
-from its client before adding its own.
+`iat`/`exp` are finite integer Unix seconds with at most a five-minute assertion
+lifetime, actor/role/nonce are bounded identifiers, and each nonce is single-use.
+Replay state is durably stored below `stateDir/auth-replay`, survives controller
+restart, and is serialized across controller processes. The exported
+`signProxyAssertion` helper is the reference implementation. The proxy must
+remove any assertion or identity header received from its client before adding
+its own.
 
 For host installation, install the controller package and systemd example, add
 the dedicated account's narrowly required Docker access, then enable the unit.
@@ -38,3 +41,9 @@ object such as:
 Any extra stdout, mutable tag, mismatch, failed test, or incomplete proof fails
 without updating deployment state. Remote helpers must apply the same protocol
 checks and expose only inventory/action/logs/deploy operations.
+
+After a hook succeeds, the controller independently inventories every configured
+container and requires the exact reported digest. `deploy.runtimePolicy`
+separately controls running and healthy checks; both default to required when the
+field is omitted. Disable either check only for a deliberate stopped-service or
+no-healthcheck workflow.

@@ -1,28 +1,16 @@
-import { createHash, createHmac, randomUUID } from 'node:crypto'
+import { createHash, createHmac } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
-import { lstat, mkdir, open, rename, unlink } from 'node:fs/promises'
+import { lstat, open } from 'node:fs/promises'
 import path from 'node:path'
 import type { AuditCheckpoint, AuditEntry, Capability, DeployResult, SecretDefinition } from '@dsh-docker-services/shared'
 import { redact } from '@dsh-docker-services/shared'
-import { assertNoSymlinkComponents, ConflictError, durableAtomicWrite, ensureOwnedRoot, readProtectedFile } from './security.js'
+import { assertNoSymlinkComponents, durableAtomicWrite, ensureOwnedRoot, readProtectedFile } from './security.js'
+import {withFileLock} from './file-lock.js'
 
 export class LeaseLockManager {
   constructor(private readonly root: string) {}
   async withLease<T>(name: string, idempotencyKey: string, leaseMs: number, run: () => Promise<T>): Promise<T> {
-    const directory = path.join(this.root, 'locks'); await ensureOwnedRoot(directory); const target = path.join(directory, `${name}.lock`); const token = randomUUID()
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try { const handle = await open(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600); try { await handle.writeFile(JSON.stringify({token, idempotencyKey, ownerPid: process.pid, expiresAt: Date.now() + leaseMs})); await handle.sync() } finally { await handle.close() }; break } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-        let lock: {expiresAt?: number}; try { lock = JSON.parse((await readProtectedFile(target, 4096)).toString('utf8')) } catch { throw new ConflictError('deployment lock is malformed') }
-        if (typeof lock.expiresAt !== 'number' || lock.expiresAt > Date.now()) throw new ConflictError('deployment lease is active')
-        const stale = `${target}.expired.${randomUUID()}`; try { await rename(target, stale); await unlink(stale).catch(() => undefined) } catch { continue }
-      }
-      if (attempt === 2) throw new ConflictError('deployment lock acquisition raced')
-    }
-    let lost = false
-    const renew = setInterval(() => { void (async () => { try { const current = JSON.parse((await readProtectedFile(target, 4096)).toString('utf8')); if (current.token !== token) { lost = true; return } await durableAtomicWrite(target, JSON.stringify({...current, expiresAt: Date.now() + leaseMs})) } catch { lost = true } })() }, Math.max(1000, Math.floor(leaseMs / 3)))
-    renew.unref()
-    try { const result = await run(); if (lost) throw new ConflictError('deployment lease was lost'); return result } finally { clearInterval(renew); try { const current = JSON.parse((await readProtectedFile(target, 4096)).toString('utf8')); if (current.token === token) await unlink(target) } catch {} }
+    return withFileLock(path.join(this.root, 'locks'), name, {leaseMs, idempotencyKey, conflictMessage: 'deployment lease is active'}, run)
   }
 }
 
@@ -37,9 +25,10 @@ export class KeyedFileCheckpointSink implements CheckpointSink {
 
 export class AuditLog {
   private queue = Promise.resolve(); private sequence = 0; private previousHash = '0'.repeat(64); private bytes = 0; private healthy = false; private healthReason = 'not initialized'
-  private constructor(private readonly file: string, private readonly sink: CheckpointSink) {}
-  static async create(root: string, sink: CheckpointSink): Promise<AuditLog> { const directory = path.join(root, 'audit'); await ensureOwnedRoot(directory); const log = new AuditLog(path.join(directory, 'events.jsonl'), sink); await log.initialize(); return log }
+  private constructor(private readonly directory: string, private readonly file: string, private readonly sink: CheckpointSink) {}
+  static async create(root: string, sink: CheckpointSink): Promise<AuditLog> { const directory = path.join(root, 'audit'); await ensureOwnedRoot(directory); const log = new AuditLog(directory, path.join(directory, 'events.jsonl'), sink); await withFileLock(directory, 'audit-append', {leaseMs: 30_000, waitMs: 10_000}, () => log.initialize()); return log }
   private async initialize(): Promise<void> {
+    this.healthy = false
     let body: Buffer<ArrayBufferLike> = Buffer.alloc(0); try { body = await readProtectedFile(this.file, 64 * 1024 * 1024) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     let previous = '0'.repeat(64); let sequence = 0; const hashes = new Map<number, string>()
     try { for (const line of body.toString('utf8').split('\n').filter(Boolean)) { const entry = JSON.parse(line) as AuditEntry; const {hash, ...record} = entry; if (entry.sequence !== sequence + 1 || entry.previousHash !== previous || createHash('sha256').update(JSON.stringify(record)).digest('hex') !== hash) throw new Error('audit chain verification failed'); sequence = entry.sequence; previous = hash; hashes.set(sequence, hash) } } catch { this.healthReason = 'audit truncation or chain corruption detected'; return }
@@ -49,10 +38,10 @@ export class AuditLog {
   }
   health(): {healthy: boolean; reason: string; sequence: number; bytes: number} { return {healthy: this.healthy, reason: this.healthReason, sequence: this.sequence, bytes: this.bytes} }
   async append(input: Omit<AuditEntry, 'sequence' | 'at' | 'previousHash' | 'hash'>): Promise<void> {
-    const task = this.queue.then(async () => { if (!this.healthy) throw new Error(`audit unavailable: ${this.healthReason}`); const record = {sequence: this.sequence + 1, at: new Date().toISOString(), ...input, details: input.details && Object.fromEntries(Object.entries(input.details).map(([key, value]) => [key, redact(value)])), previousHash: this.previousHash}; const hash = createHash('sha256').update(JSON.stringify(record)).digest('hex'); const line = `${JSON.stringify({...record, hash})}\n`; const handle = await open(this.file, fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW, 0o600); try { await handle.write(line); await handle.sync() } finally { await handle.close() }; this.sequence = record.sequence; this.previousHash = hash; this.bytes += Buffer.byteLength(line); await this.sink.write({sequence: this.sequence, hash, bytes: this.bytes, at: record.at}) })
+    const task = this.queue.then(() => withFileLock(this.directory, 'audit-append', {leaseMs: 30_000, waitMs: 10_000}, async () => { await this.initialize(); if (!this.healthy) throw new Error(`audit unavailable: ${this.healthReason}`); const record = {sequence: this.sequence + 1, at: new Date().toISOString(), ...input, details: input.details && Object.fromEntries(Object.entries(input.details).map(([key, value]) => [key, redact(value)])), previousHash: this.previousHash}; const hash = createHash('sha256').update(JSON.stringify(record)).digest('hex'); const line = `${JSON.stringify({...record, hash})}\n`; const handle = await open(this.file, fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW, 0o600); try { await handle.chmod(0o600); await handle.write(line); await handle.sync() } finally { await handle.close() }; this.sequence = record.sequence; this.previousHash = hash; this.bytes += Buffer.byteLength(line); await this.sink.write({sequence: this.sequence, hash, bytes: this.bytes, at: record.at}) }))
     this.queue = task.catch(error => { this.healthy = false; this.healthReason = redact(error instanceof Error ? error.message : String(error)) }); return task
   }
-  async read(limit = 100): Promise<AuditEntry[]> { await this.queue; if (!this.healthy) throw new Error(`audit unavailable: ${this.healthReason}`); const entries = (await readProtectedFile(this.file, 64 * 1024 * 1024)).toString('utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as AuditEntry); return entries.slice(-Math.max(1, Math.min(1000, limit))) }
+  async read(limit = 100): Promise<AuditEntry[]> { await this.queue; return withFileLock(this.directory, 'audit-append', {leaseMs: 30_000, waitMs: 10_000}, async () => { await this.initialize(); if (!this.healthy) throw new Error(`audit unavailable: ${this.healthReason}`); let body: Buffer; try { body = await readProtectedFile(this.file, 64 * 1024 * 1024) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error }; const entries = body.toString('utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as AuditEntry); return entries.slice(-Math.max(1, Math.min(1000, limit))) }) }
 }
 
 export class SecretStore {

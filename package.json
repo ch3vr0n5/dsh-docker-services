@@ -12,9 +12,10 @@
     "test": "npm run build && node --test packages/controller/lib/test/*.test.js packages/plugin/lib/test/*.test.js",
     "pack:all": "node -e \"require('node:fs').mkdirSync('artifacts',{recursive:true})\" && npm pack --workspace @dsh-docker-services/shared --pack-destination artifacts && npm pack --workspace @dsh-docker-services/controller --pack-destination artifacts && npm pack --workspace dsh-docker-services --pack-destination artifacts",
     "verify:package": "node scripts/verify-package.mjs",
+    "verify:lock": "node scripts/verify-lockfile.mjs",
     "test:consumer": "node scripts/consumer-test.mjs",
     "test:container": "node scripts/container-test.mjs",
-    "ci": "npm run typecheck && npm test && npm run pack:all && npm run verify:package && npm run test:consumer"
+    "ci": "npm run verify:lock && npm run typecheck && npm test && npm run pack:all && npm run verify:package && npm run test:consumer"
   },
   "devDependencies": {
     "@types/node": "22.19.0",

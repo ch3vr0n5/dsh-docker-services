@@ -3,8 +3,9 @@ FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a5
 WORKDIR /app
 RUN npm install --global npm@11.12.1 --ignore-scripts
 COPY package.json package-lock.json tsconfig.json ./
+COPY scripts/verify-lockfile.mjs ./scripts/verify-lockfile.mjs
 COPY packages ./packages
-RUN npm ci --ignore-scripts && npm run build
+RUN node scripts/verify-lockfile.mjs && npm ci --ignore-scripts && npm run build
 
 FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS runtime
 WORKDIR /app

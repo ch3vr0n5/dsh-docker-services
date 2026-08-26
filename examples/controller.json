@@ -19,7 +19,7 @@
     "url": "https://example-api.internal.example",
     "actions": ["inventory", "logs", "start", "stop", "restart", "deploy", "parameters:write", "secret:status", "secret:set", "secret:rotate", "secret:test"],
     "parameters": [{"key": "LOG_LEVEL", "label": "Log level", "type": "enum", "enum": ["info", "warn", "error"], "default": "info"}],
-    "deploy": {"hook": "/usr/local/lib/dsh-docker-services/deploy-example-api", "repositories": ["https://git.example.invalid/team/example-api.git"], "branches": ["release"], "timeoutMs": 1800000, "leaseMs": 300000},
+    "deploy": {"hook": "/usr/local/lib/dsh-docker-services/deploy-example-api", "repositories": ["https://git.example.invalid/team/example-api.git"], "branches": ["release"], "timeoutMs": 1800000, "leaseMs": 300000, "runtimePolicy": {"requireRunning": true, "requireHealthy": true}},
     "secrets": [{"id": "api-token", "label": "API token", "target": "/var/lib/dsh-docker-services/secrets/example-api-token", "minLength": 16, "testHook": "/usr/local/lib/dsh-docker-services/test-example-api-token"}]
   }]
 }

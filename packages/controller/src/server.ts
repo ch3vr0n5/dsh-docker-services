@@ -2,14 +2,14 @@ import http, {type IncomingHttpHeaders, type IncomingMessage, type ServerRespons
 import type {Controller, Identity} from './controller.js'
 import {HmacProxyAuthenticator, ProtectedLogger, publicMessage, requestId, SafeError} from './security.js'
 
-export interface RequestAuthenticator { authenticate(headers: IncomingHttpHeaders): Identity }
+export interface RequestAuthenticator { authenticate(headers: IncomingHttpHeaders): Promise<Identity> | Identity }
 async function body(req: IncomingMessage): Promise<unknown> { const chunks: Buffer[] = []; let bytes = 0; for await (const chunk of req) { bytes += chunk.length; if (bytes > 64 * 1024) throw new SafeError('bad_request', 413, 'request body too large'); chunks.push(Buffer.from(chunk)) } if (!chunks.length) return {}; try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw new SafeError('bad_request', 400, 'invalid JSON body') } }
 function send(res: ServerResponse, status: number, value: unknown, id: string): void { const payload = JSON.stringify(value); res.writeHead(status, {'content-type': 'application/json', 'content-length': Buffer.byteLength(payload), 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-request-id': id}); res.end(payload) }
 export function createServer(controller: Controller, authenticator: RequestAuthenticator, logger: ProtectedLogger): http.Server {
   return http.createServer(async (req, res) => {
     const id = requestId(); const abort = new AbortController(); req.once('aborted', () => abort.abort()); res.once('close', () => { if (!res.writableEnded) abort.abort() })
     try {
-      const identity = authenticator.authenticate(req.headers); const url = new URL(req.url ?? '/', 'http://localhost')
+      const identity = await authenticator.authenticate(req.headers); const url = new URL(req.url ?? '/', 'http://localhost')
       if (req.method === 'GET' && url.pathname === '/v1/health') return send(res, 200, await controller.health(identity), id)
       if (req.method === 'GET' && url.pathname === '/v1/services') return send(res, 200, await controller.inventory(identity, abort.signal), id)
       if (req.method === 'GET' && url.pathname === '/v1/audit') return send(res, 200, await controller.auditEntries(identity, Number(url.searchParams.get('limit') ?? '100')), id)

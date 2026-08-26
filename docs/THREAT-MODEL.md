@@ -18,21 +18,24 @@ modify those or control Docker is already privileged and outside this boundary.
   keys, hook paths, and remote targets are administrator allowlists.
 - RBAC uses the signed proxy assertion's actor and role. The controller rejects
   caller `x-dsh-actor`/`x-dsh-role` headers, verifies issuer, audience, time,
-  signature and nonce, and rejects replay. Only the trusted proxy may access the
-  private socket and HMAC key.
+  signature and nonce, and rejects replay using a durable, cross-process locked
+  nonce store. Only the trusted proxy may access the private socket and HMAC key.
 - Local Docker uses a root-owned absolute binary, explicit validated Unix
   socket, minimal environment, bounded output/time, and fixed argument forms.
   SSH and mTLS use fixed destinations and bounded, cancellable JSON operations.
 - Deploy requires an allowed repo/branch, full SHA, idempotency key, and
   renewable service lease. A root-owned hook must prove remote reachability and
   branch ancestry, deploy by digest, run tests, and return authoritative JSON.
-  Client digest/test metadata and incomplete or mismatched hook results fail.
+  The controller independently requires that every configured container has the
+  exact digest and configured running/health state. Client digest/test metadata
+  and incomplete or mismatched hook results fail.
 - Secret writes validate schema, reject symlink components, use no-follow file
   opens and durable atomic replacement under an owned 0700 root. Status exposes
   only configured/time; there is no secret-read route.
-- Audit appends are serialized, fsynced, redacted, hash chained, and followed by
-  a keyed fsynced checkpoint. Put the checkpoint file on independently retained
-  or off-host storage. Startup/health detect truncation, rollback, or corruption.
+- Audit appends are serialized across processes by a no-follow OS lock, fsynced,
+  redacted, hash chained, and followed by a keyed fsynced checkpoint. Put the
+  checkpoint file on independently retained or off-host storage. Startup/health
+  detect truncation, rollback, or corruption.
 - Public errors are bounded and opaque. Detailed errors go only to a protected,
   bounded, redacted log and are correlated by request ID.
 

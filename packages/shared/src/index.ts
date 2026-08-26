@@ -6,7 +6,7 @@ export type ServiceAction = typeof serviceActions[number]
 export type Capability = typeof capabilities[number]
 export type TestState = 'passed' | 'failed'
 export type Parameter = { key: string; label: string; description?: string; type: 'string' | 'integer' | 'boolean' | 'enum'; default?: string; enum?: string[]; pattern?: string; required?: boolean }
-export type DeployPolicy = { hook: string; repositories: string[]; branches: string[]; timeoutMs?: number; leaseMs?: number }
+export type DeployPolicy = { hook: string; repositories: string[]; branches: string[]; timeoutMs?: number; leaseMs?: number; runtimePolicy?: {requireRunning: boolean; requireHealthy: boolean} }
 export type SecretDefinition = { id: string; label: string; target: string; description?: string; minLength?: number; maxLength?: number; multiline?: boolean; testHook?: string }
 export type ServiceDefinition = { name: string; displayName?: string; containers: string[]; actions: ServiceAction[]; url?: string; parameters?: Parameter[]; deploy?: DeployPolicy; secrets?: SecretDefinition[] }
 export type RoleDefinition = { name: string; capabilities: Capability[] }
@@ -47,7 +47,7 @@ export function assertConfig(value: unknown): asserts value is ControllerConfig 
     if (!service.containers.length || service.containers.some(name => !patterns.identifier.test(name)) || service.actions.some(action => !serviceActions.includes(action))) throw new Error(`invalid service allowlist: ${service.name}`)
     for (const parameter of service.parameters ?? []) if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(parameter.key) || !['string', 'integer', 'boolean', 'enum'].includes(parameter.type) || (parameter.type === 'enum' && !parameter.enum?.length)) throw new Error(`invalid parameter: ${parameter.key}`)
     if (service.url && !/^https?:\/\//.test(service.url)) throw new Error(`invalid service URL: ${service.name}`)
-    if (service.deploy && (!patterns.absolute.test(service.deploy.hook) || !service.deploy.repositories.length || !service.deploy.branches.length || (service.deploy.timeoutMs !== undefined && !boundedInteger(service.deploy.timeoutMs, 1000, 3_600_000)) || (service.deploy.leaseMs !== undefined && !boundedInteger(service.deploy.leaseMs, 3000, 3_600_000)))) throw new Error(`invalid deploy policy: ${service.name}`)
+    if (service.deploy && (!patterns.absolute.test(service.deploy.hook) || !service.deploy.repositories.length || !service.deploy.branches.length || (service.deploy.timeoutMs !== undefined && !boundedInteger(service.deploy.timeoutMs, 1000, 3_600_000)) || (service.deploy.leaseMs !== undefined && !boundedInteger(service.deploy.leaseMs, 3000, 3_600_000)) || (service.deploy.runtimePolicy !== undefined && (typeof service.deploy.runtimePolicy.requireRunning !== 'boolean' || typeof service.deploy.runtimePolicy.requireHealthy !== 'boolean')))) throw new Error(`invalid deploy policy: ${service.name}`)
     for (const secret of service.secrets ?? []) if (!patterns.identifier.test(secret.id) || !patterns.absolute.test(secret.target) || !secret.target.startsWith(`${c.secretRoot}/`) || (secret.testHook && !patterns.absolute.test(secret.testHook)) || (secret.minLength !== undefined && !boundedInteger(secret.minLength, 1, 8192)) || (secret.maxLength !== undefined && !boundedInteger(secret.maxLength, secret.minLength ?? 1, 8192))) throw new Error(`invalid secret: ${secret.id}`)
   }
 }
