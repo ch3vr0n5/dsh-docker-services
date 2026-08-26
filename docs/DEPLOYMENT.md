@@ -1,25 +1,40 @@
 # Deployment
 
-Copy `examples/controller.json` to `/etc/dsh-docker-services/controller.json`,
-replace every example service and repository, then provision the named deploy
-and secret-test hooks as root-owned non-writable executables. Do not put secret
-values in this file. Create a dedicated `dsh-controller` account, grant it only
-the narrowly required Docker access, and grant the DSH process group read/write
-access to `/run/dsh-docker-services/controller.sock`.
+Copy `examples/controller.json`, replace all examples, and provision every
+binary and hook as root-owned and not group/world writable. Writable roots must
+be owned by the controller UID, mode 0700, and have no symlink component. Keep
+auth/checkpoint keys out of configuration and put the keyed checkpoint file on
+a separate off-host or independently retained mount.
 
-For a host installation, install the controller package, install
-`examples/host/dsh-docker-services.service`, run `systemctl daemon-reload`, and
-enable the unit. The supplied unit is a baseline: add your distribution's
-Docker group policy and audit forwarding configuration.
+DSH connects to an authenticating proxy socket, never the private controller
+socket. The proxy strips identity headers and signs an assertion containing
+`iss`, `aud`, `sub`, `role`, `iat`, `exp`, and a unique nonce using
+`auth.keyFile`; assertions should expire within five minutes. The controller
+maps the signed role to configured capabilities. An mTLS terminator may provide
+the same trusted boundary after validating client certificates.
 
-For a container installation, use `examples/container/compose.yaml`. A mounted
-Docker socket remains host-privileged; prefer the SSH or mTLS adapter when the
-DSH host should not directly hold it. The SSH helper must deserialize the same
-typed `RemoteCall` protocol and implement only inventory/action/logs/deploy.
-The mTLS endpoint must require client certificates and reject any unrecognized
-operation or service.
+The proxy sets only `x-dsh-proxy-assertion`. Its value is
+`base64url(UTF-8 JSON) + "." + base64url(HMAC-SHA256(key, encoded JSON))`.
+`iat`/`exp` are Unix seconds, actor/role/nonce are bounded identifiers, and each
+nonce is single-use. The exported `signProxyAssertion` helper is the reference
+implementation. The proxy must remove any assertion or identity header received
+from its client before adding its own.
 
-Configure the DSH plugin's socket, actor, and role through its Cordis config.
-The example `dsh-viewer` role is deliberately read-only. Grant an operator role
-only where service changes are intended. Install the published plugin artifact;
-do not mount controller configuration into the browser/client environment.
+For host installation, install the controller package and systemd example, add
+the dedicated account's narrowly required Docker access, then enable the unit.
+For containers, use the repository-root build context in the Compose example.
+The image and actions are digest/SHA pinned. A mounted Docker socket remains
+host-privileged; prefer the constrained SSH or mTLS adapter across hosts.
+
+Deploy hooks receive only `--service`, `--repo`, `--branch`, and `--sha`. They
+must fetch the allowed repository, prove the SHA reachable from the requested
+remote branch, deploy an immutable digest, run tests, then print exactly one JSON
+object such as:
+
+```json
+{"repo":"https://git.example.invalid/team/example-api.git","branch":"release","sha":"0123456789012345678901234567890123456789","imageDigest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","deployedAt":"2026-08-26T00:00:00Z","testState":"passed","reachable":true,"branchVerified":true}
+```
+
+Any extra stdout, mutable tag, mismatch, failed test, or incomplete proof fails
+without updating deployment state. Remote helpers must apply the same protocol
+checks and expose only inventory/action/logs/deploy operations.

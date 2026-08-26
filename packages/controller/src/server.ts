@@ -1,13 +1,29 @@
-import http, { type IncomingMessage, type ServerResponse } from 'node:http'
-import type { Controller, Identity } from './controller.js'
-import { ControllerError } from './controller.js'
-import type { Capability, ControllerConfig } from '@dsh-docker-services/shared'
+import http, {type IncomingHttpHeaders, type IncomingMessage, type ServerResponse} from 'node:http'
+import type {Controller, Identity} from './controller.js'
+import {HmacProxyAuthenticator, ProtectedLogger, publicMessage, requestId, SafeError} from './security.js'
 
-export function identityFromRequest(req: IncomingMessage, config: ControllerConfig): Identity {
-  // A reverse proxy or Unix-socket peer must authenticate the actor. This reference maps a trusted injected role, never capabilities from the client.
-  const actor = String(req.headers['x-dsh-actor'] ?? ''); const role = String(req.headers['x-dsh-role'] ?? ''); const capabilities = config.roles.find(entry => entry.name === role)?.capabilities ?? []
-  return {actor, capabilities}
+export interface RequestAuthenticator { authenticate(headers: IncomingHttpHeaders): Identity }
+async function body(req: IncomingMessage): Promise<unknown> { const chunks: Buffer[] = []; let bytes = 0; for await (const chunk of req) { bytes += chunk.length; if (bytes > 64 * 1024) throw new SafeError('bad_request', 413, 'request body too large'); chunks.push(Buffer.from(chunk)) } if (!chunks.length) return {}; try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw new SafeError('bad_request', 400, 'invalid JSON body') } }
+function send(res: ServerResponse, status: number, value: unknown, id: string): void { const payload = JSON.stringify(value); res.writeHead(status, {'content-type': 'application/json', 'content-length': Buffer.byteLength(payload), 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-request-id': id}); res.end(payload) }
+export function createServer(controller: Controller, authenticator: RequestAuthenticator, logger: ProtectedLogger): http.Server {
+  return http.createServer(async (req, res) => {
+    const id = requestId(); const abort = new AbortController(); req.once('aborted', () => abort.abort()); res.once('close', () => { if (!res.writableEnded) abort.abort() })
+    try {
+      const identity = authenticator.authenticate(req.headers); const url = new URL(req.url ?? '/', 'http://localhost')
+      if (req.method === 'GET' && url.pathname === '/v1/health') return send(res, 200, await controller.health(identity), id)
+      if (req.method === 'GET' && url.pathname === '/v1/services') return send(res, 200, await controller.inventory(identity, abort.signal), id)
+      if (req.method === 'GET' && url.pathname === '/v1/audit') return send(res, 200, await controller.auditEntries(identity, Number(url.searchParams.get('limit') ?? '100')), id)
+      const match = url.pathname.match(/^\/v1\/services\/([a-z0-9-]+)(?:\/(.+))?$/); if (!match) throw new SafeError('not_found', 404, 'route not found'); const service = match[1]!; const action = match[2] ?? ''
+      if (req.method === 'GET' && action === 'logs') return send(res, 200, await controller.logs(identity, service, Number(url.searchParams.get('tail') ?? '200'), abort.signal), id)
+      if (req.method !== 'POST') throw new SafeError('not_found', 404, 'route not found'); const payload = await body(req) as Record<string, unknown>
+      if (['start', 'stop', 'restart'].includes(action)) return send(res, 200, await controller.action(identity, service, action as 'start' | 'stop' | 'restart', abort.signal), id)
+      if (action === 'deploy') return send(res, 200, await controller.deploy(identity, service, payload, abort.signal), id)
+      if (action === 'parameters') return send(res, 200, await controller.parameters(identity, service, payload.values), id)
+      const secret = action.match(/^secrets\/([a-z0-9-]+)\/(status|set|rotate|test)$/); if (secret) return send(res, 200, await controller.secret(identity, service, secret[1]!, secret[2] as 'status' | 'set' | 'rotate' | 'test', payload.value, abort.signal), id)
+      throw new SafeError('not_found', 404, 'route not found')
+    } catch (error) {
+      await logger.log(id, error).catch(() => undefined); const safe = error instanceof SafeError ? error : new SafeError('internal', 500, 'unexpected controller failure'); if (!res.headersSent) send(res, safe.status, {error: {code: safe.code, message: publicMessage(safe), requestId: id}}, id)
+    }
+  })
 }
-async function body(req: IncomingMessage): Promise<any> { const chunks: Buffer[] = []; let bytes = 0; for await (const chunk of req) { bytes += chunk.length; if (bytes > 64 * 1024) throw new ControllerError('request body too large', 413); chunks.push(Buffer.from(chunk)) } if (!chunks.length) return {}; try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw new ControllerError('invalid JSON body') } }
-function send(res: ServerResponse, status: number, value: unknown): void { const payload = JSON.stringify(value); res.writeHead(status, {'content-type': 'application/json', 'content-length': Buffer.byteLength(payload), 'cache-control': 'no-store'}); res.end(payload) }
-export function createServer(controller: Controller): http.Server { return http.createServer(async (req, res) => { try { const url = new URL(req.url ?? '/', 'http://localhost'); const identity = identityFromRequest(req, controller.config); if (req.method === 'GET' && url.pathname === '/v1/health') return send(res, 200, await controller.health(identity)); if (req.method === 'GET' && url.pathname === '/v1/services') return send(res, 200, await controller.inventory(identity)); if (req.method === 'GET' && url.pathname === '/v1/audit') return send(res, 200, await controller.auditEntries(identity, Number(url.searchParams.get('limit') ?? '100'))); const service = url.pathname.match(/^\/v1\/services\/([a-z0-9-]+)(?:\/(.+))?$/); if (!service) throw new ControllerError('not found', 404); const name = service[1]!; const action = service[2] ?? ''; if (req.method === 'GET' && action === 'logs') return send(res, 200, await controller.logs(identity, name, Number(url.searchParams.get('tail') ?? '200'))); if (req.method !== 'POST') throw new ControllerError('method not allowed', 405); const payload = await body(req); if (['start', 'stop', 'restart'].includes(action)) return send(res, 200, await controller.action(identity, name, action as 'start' | 'stop' | 'restart')); if (action === 'deploy') return send(res, 200, await controller.deploy(identity, name, payload)); if (action === 'parameters') return send(res, 200, await controller.parameters(identity, name, payload.values)); const secret = action.match(/^secrets\/([a-z0-9-]+)\/(status|set|rotate|test)$/); if (secret) return send(res, 200, await controller.secret(identity, name, secret[1]!, secret[2] as 'status' | 'set' | 'rotate' | 'test', payload.value)); throw new ControllerError('not found', 404) } catch (error) { const known = error instanceof ControllerError; send(res, known ? error.status : 500, {error: error instanceof Error ? error.message : 'internal error'}) } }) }
+export {HmacProxyAuthenticator}

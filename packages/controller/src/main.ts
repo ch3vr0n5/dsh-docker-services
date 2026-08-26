@@ -1,10 +1,20 @@
-import { readFile, mkdir, rm, chmod } from 'node:fs/promises'
+#!/usr/bin/env node
+import {chmod, lstat, unlink} from 'node:fs/promises'
 import path from 'node:path'
-import { assertConfig, type ControllerConfig } from '@dsh-docker-services/shared'
-import { Controller } from './controller.js'
-import { LocalDockerAdapter, RemoteDockerAdapter, SshJsonTransport, TlsJsonTransport } from './docker.js'
-import { createServer } from './server.js'
-const configPath = process.env.DSH_DOCKER_SERVICES_CONFIG ?? '/etc/dsh-docker-services/controller.json'; const socketPath = process.env.DSH_DOCKER_SERVICES_SOCKET ?? '/run/dsh-docker-services/controller.sock'
-const config = JSON.parse(await readFile(configPath, 'utf8')) as ControllerConfig; assertConfig(config)
-const docker = config.docker.kind === 'local' ? new LocalDockerAdapter() : config.docker.kind === 'ssh' ? new RemoteDockerAdapter(new SshJsonTransport(config.docker.ssh!)) : new RemoteDockerAdapter(new TlsJsonTransport(config.docker.tls!))
-await mkdir(path.dirname(socketPath), {recursive: true}); await rm(socketPath, {force: true}); const server = createServer(new Controller(config, docker)); server.listen(socketPath, async () => { await chmod(socketPath, 0o660); console.log(`dsh-docker-services controller listening on ${socketPath}`) }); for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => server.close(() => process.exit(0)))
+import {assertConfig, type ControllerConfig} from '@dsh-docker-services/shared'
+import {Controller} from './controller.js'
+import {assertDockerSocket, assertTrustedExecutable, LocalDockerAdapter, RemoteDockerAdapter, SshJsonTransport, TlsJsonTransport} from './docker.js'
+import {createServer, HmacProxyAuthenticator} from './server.js'
+import {ensureOwnedRoot, ProtectedLogger, readProtectedFile} from './security.js'
+
+if (process.argv[2] === '--version') { console.log('0.1.0'); process.exit(0) }
+const configPath = process.argv[2] ?? '/etc/dsh-docker-services/controller.json'
+const config = JSON.parse((await readProtectedFile(configPath, 1024 * 1024)).toString('utf8')) as ControllerConfig; assertConfig(config)
+await ensureOwnedRoot(path.dirname(config.socketPath)); await ensureOwnedRoot(path.join(config.stateDir, 'logs')); await assertTrustedExecutable(config.docker.binary)
+if (config.docker.kind === 'local') await assertDockerSocket(config.docker.host)
+if (config.docker.kind === 'ssh') { await assertTrustedExecutable(config.docker.ssh!.binary); await readProtectedFile(config.docker.ssh!.knownHosts, 1024 * 1024); if (config.docker.ssh!.identityFile) await readProtectedFile(config.docker.ssh!.identityFile, 64 * 1024) }
+try { const info = await lstat(config.socketPath); if (!info.isSocket() || info.isSymbolicLink() || (typeof process.getuid === 'function' && info.uid !== process.getuid())) throw new Error('refusing to replace unsafe controller socket'); await unlink(config.socketPath) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+const docker = config.docker.kind === 'local' ? new LocalDockerAdapter(config.docker) : config.docker.kind === 'ssh' ? new RemoteDockerAdapter(new SshJsonTransport(config.docker.ssh!)) : new RemoteDockerAdapter(new TlsJsonTransport(config.docker.tls!))
+const controller = await Controller.create(config, docker); const authenticator = await HmacProxyAuthenticator.create(config.auth, config.roles); const logger = new ProtectedLogger(path.join(config.stateDir, 'logs', 'controller-errors.jsonl')); const server = createServer(controller, authenticator, logger)
+server.listen(config.socketPath, async () => { await chmod(config.socketPath, config.socketMode ?? 0o600); console.log(`dsh-docker-services controller listening on ${config.socketPath}`) })
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => server.close(() => process.exit(0)))

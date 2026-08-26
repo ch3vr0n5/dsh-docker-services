@@ -7,16 +7,14 @@ Requires=docker.service
 Type=simple
 User=dsh-controller
 Group=dsh-controller
-Environment=DSH_DOCKER_SERVICES_CONFIG=/etc/dsh-docker-services/controller.json
-Environment=DSH_DOCKER_SERVICES_SOCKET=/run/dsh-docker-services/controller.sock
-ExecStart=/usr/local/bin/dsh-docker-services-controller
+ExecStart=/usr/local/bin/dsh-docker-services-controller /etc/dsh-docker-services/controller.json
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/dsh-docker-services /run/dsh-docker-services
+ReadWritePaths=/var/lib/dsh-docker-services /var/lib/dsh-audit-checkpoint /run/dsh-docker-services
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]

@@ -1,0 +1,50 @@
+import { constants, createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
+import { lstat, mkdir, open, readFile, realpath, rename, stat } from 'node:fs/promises'
+import path from 'node:path'
+import type { AuthConfig, ControllerConfig } from '@dsh-docker-services/shared'
+import { patterns, redact } from '@dsh-docker-services/shared'
+
+const fsConstants = (await import('node:fs')).constants
+const expectedUid = typeof process.getuid === 'function' ? process.getuid() : undefined
+export class SafeError extends Error { constructor(readonly code: 'bad_request' | 'unauthorized' | 'forbidden' | 'not_found' | 'conflict' | 'unavailable' | 'internal', readonly status: number, internalMessage: string) { super(internalMessage) } }
+export class ConflictError extends SafeError { constructor(message = 'resource is busy') { super('conflict', 409, message) } }
+export function publicMessage(error: SafeError): string { return ({bad_request: 'request rejected', unauthorized: 'authentication required', forbidden: 'operation denied', not_found: 'resource not found', conflict: 'operation already in progress', unavailable: 'controller dependency unavailable', internal: 'controller request failed'} as const)[error.code] }
+export function requestId(): string { return randomUUID() }
+export function minimalEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv { return {LANG: 'C', LC_ALL: 'C', PATH: '/usr/bin:/bin', ...extra} }
+
+async function components(target: string): Promise<string[]> { const normalized = path.resolve(target); const result: string[] = []; let current = normalized; while (current !== path.dirname(current)) { result.unshift(current); current = path.dirname(current) } return result }
+export async function assertNoSymlinkComponents(target: string): Promise<void> { for (const component of await components(target)) { try { if ((await lstat(component)).isSymbolicLink()) throw new Error(`symlink path component rejected: ${component}`) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error } } }
+export async function ensureOwnedRoot(root: string): Promise<void> { if (!patterns.absolute.test(root)) throw new Error('writable root must be absolute'); await assertNoSymlinkComponents(root); await mkdir(root, {recursive: true, mode: 0o700}); await assertNoSymlinkComponents(root); const info = await lstat(root); if (!info.isDirectory() || info.isSymbolicLink() || (expectedUid !== undefined && info.uid !== expectedUid)) throw new Error(`writable root is not owned by controller uid: ${root}`); if ((info.mode & 0o022) !== 0) throw new Error(`writable root must not be group/world writable: ${root}`) }
+export async function assertOwnedRegularFile(file: string, maximumBytes = 64 * 1024): Promise<void> { await assertNoSymlinkComponents(file); const info = await lstat(file); const owned = info.uid === 0 || expectedUid === undefined || info.uid === expectedUid; if (!info.isFile() || info.isSymbolicLink() || info.size > maximumBytes || !owned || (info.mode & 0o022) !== 0) throw new Error(`protected file permissions rejected: ${file}`) }
+export async function readProtectedFile(file: string, maximumBytes = 64 * 1024): Promise<Buffer> { await assertOwnedRegularFile(file, maximumBytes); const handle = await open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW); try { const value = await handle.readFile(); if (value.length > maximumBytes) throw new Error('protected file exceeds size limit'); return value } finally { await handle.close() } }
+export async function durableAtomicWrite(target: string, contents: string | Buffer, mode = 0o600): Promise<void> { await assertNoSymlinkComponents(path.dirname(target)); try { if ((await lstat(target)).isSymbolicLink()) throw new Error('symlink write target rejected') } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }; const parent = path.dirname(target); const rootInfo = await lstat(parent); if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || (expectedUid !== undefined && rootInfo.uid !== expectedUid)) throw new Error('unsafe writable parent'); const temporary = path.join(parent, `.${path.basename(target)}.${process.pid}.${randomUUID()}.tmp`); const handle = await open(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, mode); try { await handle.writeFile(contents); await handle.sync() } finally { await handle.close() } await rename(temporary, target); const directory = await open(parent, fsConstants.O_RDONLY); try { await directory.sync() } finally { await directory.close() } }
+
+export type AuthenticatedIdentity = { actor: string; role: string; capabilities: ControllerConfig['roles'][number]['capabilities'] }
+type Assertion = { iss: string; aud: string; sub: string; role: string; iat: number; exp: number; nonce: string }
+export class HmacProxyAuthenticator {
+  private readonly seen = new Map<string, number>()
+  private constructor(private readonly config: AuthConfig, private readonly roles: ControllerConfig['roles'], private readonly key: Buffer) {}
+  static async create(config: AuthConfig, roles: ControllerConfig['roles']): Promise<HmacProxyAuthenticator> { const key = await readProtectedFile(config.keyFile, 4096); if (key.length < 32) throw new Error('proxy authentication key must contain at least 32 bytes'); return new HmacProxyAuthenticator(config, roles, key) }
+  authenticate(headers: Record<string, string | string[] | undefined>): AuthenticatedIdentity {
+    if (headers['x-dsh-actor'] !== undefined || headers['x-dsh-role'] !== undefined) throw new SafeError('unauthorized', 401, 'caller identity headers are forbidden')
+    const raw = headers['x-dsh-proxy-assertion']; if (typeof raw !== 'string' || raw.length > 4096) throw new SafeError('unauthorized', 401, 'missing proxy assertion')
+    const [encoded, signature, extra] = raw.split('.'); if (!encoded || !signature || extra) throw new SafeError('unauthorized', 401, 'malformed proxy assertion')
+    const expected = createHmac('sha256', this.key).update(encoded).digest(); let actual: Buffer
+    try { actual = Buffer.from(signature, 'base64url') } catch { throw new SafeError('unauthorized', 401, 'malformed proxy signature') }
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new SafeError('unauthorized', 401, 'invalid proxy signature')
+    let assertion: Assertion; try { assertion = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) } catch { throw new SafeError('unauthorized', 401, 'invalid proxy assertion JSON') }
+    const now = Math.floor(Date.now() / 1000); const skew = this.config.maxClockSkewSeconds ?? 30
+    if (assertion.iss !== this.config.issuer || assertion.aud !== this.config.audience || !patterns.identifier.test(assertion.sub) || !patterns.identifier.test(assertion.role) || !patterns.idempotencyKey.test(assertion.nonce) || assertion.iat > now + skew || assertion.exp < now - skew || assertion.exp - assertion.iat > 300) throw new SafeError('unauthorized', 401, 'proxy assertion claims rejected')
+    for (const [nonce, expiration] of this.seen) if (expiration < now) this.seen.delete(nonce)
+    if (this.seen.has(assertion.nonce)) throw new SafeError('unauthorized', 401, 'proxy assertion replayed'); this.seen.set(assertion.nonce, assertion.exp + skew)
+    const role = this.roles.find(candidate => candidate.name === assertion.role); if (!role) throw new SafeError('forbidden', 403, 'unknown authenticated role')
+    return {actor: assertion.sub, role: role.name, capabilities: role.capabilities}
+  }
+}
+export function signProxyAssertion(key: Buffer, assertion: Assertion): string { const encoded = Buffer.from(JSON.stringify(assertion)).toString('base64url'); return `${encoded}.${createHmac('sha256', key).update(encoded).digest('base64url')}` }
+
+export class ProtectedLogger {
+  private queue = Promise.resolve()
+  constructor(private readonly file: string, private readonly maxBytes = 16 * 1024 * 1024) {}
+  log(request: string, error: unknown): Promise<void> { const line = JSON.stringify({at: new Date().toISOString(), request, error: redact(error instanceof Error ? `${error.name}: ${error.message}` : String(error))}) + '\n'; const task = this.queue.then(async () => { await assertNoSymlinkComponents(this.file); try { if ((await lstat(this.file)).size + Buffer.byteLength(line) > this.maxBytes) await rename(this.file, `${this.file}.1`) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }; const handle = await open(this.file, fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW, 0o600); try { await handle.write(line); await handle.sync() } finally { await handle.close() } }); this.queue = task.catch(() => undefined); return task }
+}

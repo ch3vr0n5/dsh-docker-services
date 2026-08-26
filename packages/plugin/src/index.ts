@@ -7,11 +7,11 @@ import { contained, UnixSocketTransport } from './client.js'
 
 export const name = 'dsh-docker-services'
 export const inject = ['connection', 'tools']
-export interface Config { socketPath: string; actor: string; role: string }
-export const Config: z<Config> = z.object({socketPath: z.string().default('/run/dsh-docker-services/controller.sock'), actor: z.string().default('dsh-plugin'), role: z.string().default('dsh-viewer')}).default({socketPath: '/run/dsh-docker-services/controller.sock', actor: 'dsh-plugin', role: 'dsh-viewer'})
+export interface Config { socketPath: string }
+export const Config: z<Config> = z.object({socketPath: z.string().default('/run/dsh-docker-services/proxy.sock')}).default({socketPath: '/run/dsh-docker-services/proxy.sock'})
 const encode = encodeURIComponent
 export function apply(ctx: Context, config: Config): void {
-  const transport = new UnixSocketTransport(config.socketPath, config.actor, config.role)
+  const transport = new UnixSocketTransport(config.socketPath)
   const call = (route: string, options?: {method?: string; body?: unknown; signal?: AbortSignal}): any => contained(transport.request(route, options))
   ctx.connection.rpc.handle('/dsh-docker-services', async (endpoint, payload, signal) => {
     const input = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}; const service = typeof input.service === 'string' ? input.service : ''

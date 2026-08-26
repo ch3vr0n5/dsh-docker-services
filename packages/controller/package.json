@@ -1,13 +1,15 @@
 {
   "name": "@dsh-docker-services/controller",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
-  "main": "./lib/index.js",
-  "types": "./lib/index.d.ts",
-  "bin": {"dsh-docker-services-controller": "./lib/main.js"},
-  "files": ["lib", "README.md"],
+  "main": "./lib/src/index.js",
+  "types": "./lib/src/index.d.ts",
+  "exports": {".": {"types": "./lib/src/index.d.ts", "default": "./lib/src/index.js"}, "./package.json": "./package.json"},
+  "bin": {"dsh-docker-services-controller": "./lib/src/main.js"},
+  "files": ["lib/src/**/*.js", "lib/src/**/*.d.ts", "README.md", "LICENSE"],
   "scripts": {"build": "tsc -b"},
   "dependencies": {"@dsh-docker-services/shared": "0.1.0"},
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "publishConfig": {"access": "public"}
 }

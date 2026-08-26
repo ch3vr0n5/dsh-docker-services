@@ -13,18 +13,19 @@ remote-host access to the UI or model.
   and an optional internal or Tailscale URL.
 - Per-service action allowlists cover logs, start/stop/restart, schema-driven
   non-secret parameters, and write-only secret status/set/rotate/test.
-- Deploy calls are exact-revision guarded (repo, branch, SHA, optional digest),
-  locked per service, recorded with test state, and passed only to a configured
-  hook. No request accepts a shell command, host path, or remote address.
+- Deploy calls are exact-revision guarded (repo, branch, full SHA), leased and
+  idempotent. Only authoritative hook output can supply image digest, verified
+  reachability/branch binding, deployment time, and passing test state.
 - Local Docker, constrained SSH helper, and mTLS JSON adapter reference
   implementations; all use typed operations only.
-- RBAC capabilities, bounded plugin error containment, redacted hash-chained
-  audit records, atomic secret writes, package checks, and CI.
+- Signed trusted-proxy identity/RBAC, bounded opaque errors, protected redacted
+  logs, fsynced hash-chained audit with keyed checkpoints, atomic no-follow
+  writes, package/consumer/container checks, and CI.
 
 ## Quick start
 
 ```sh
-npm install --package-lock=false
+npm ci --ignore-scripts
 npm run ci
 cp examples/controller.json /etc/dsh-docker-services/controller.json
 ```

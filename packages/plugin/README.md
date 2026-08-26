@@ -1,5 +1,6 @@
 # dsh-docker-services plugin
 
-This is the unprivileged DeepSeek Harness half of the project. It only talks to
-the local controller socket and exposes its allowlisted operations; it never
-opens Docker sockets, executes shell commands, or stores secrets.
+This is the unprivileged DeepSeek Harness half of the project. It talks only to
+an authenticating local proxy socket and exposes allowlisted operations; it
+never selects identity/role, opens Docker sockets, executes commands, or stores
+secrets.

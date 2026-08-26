@@ -1,0 +1,8 @@
+.git
+node_modules
+artifacts
+**/lib
+**/*.tsbuildinfo
+examples/container/secrets
+*.log
+.DS_Store

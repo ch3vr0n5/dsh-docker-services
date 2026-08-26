@@ -1,12 +1,13 @@
 # Releasing
 
-1. Update versions and the changelog/release notes.
-2. Run `npm install --package-lock=false`, then `npm run ci` on Node 22 and Node 24.
-3. Inspect `artifacts/dsh-docker-services-*.tgz` with `npm pack --dry-run` or
-   `tar -tzf`; it must contain compiled plugin files and no `.env`, state,
-   node_modules, controller configuration, or test fixture secret.
-4. Sign/tag the commit and publish only the plugin workspace after review.
-   The privileged controller is deployed separately from source or a reviewed
-   container image; publishing a DSH plugin must not deploy controller code.
-5. Include breaking protocol/configuration changes in the release notes and
-   retain prior controller support during the documented migration window.
+1. Update versions and release notes.
+2. Install npm 11.12.1, run `npm ci --ignore-scripts`, then `npm run ci` on the
+   pinned Node versions. `devEngines` fails closed on another npm version.
+3. Run `npm run test:container`. Inspect all three artifacts; each must contain
+   compiled entrypoints and the full license, with no tests, `.env`, state,
+   node_modules, configuration, or fixture secret. The clean consumer test must
+   import plugin client/controller exports and resolve the controller bin.
+4. Sign/tag the reviewed commit and publish shared, controller, then plugin.
+   Publishing packages must not deploy the privileged controller.
+5. Document protocol/config migration and retain prior controller compatibility
+   for the stated migration window.
