@@ -35,7 +35,10 @@ jobs:
       - run: npm install --global npm@11.12.1 --ignore-scripts
       - run: docker build --file examples/container/Dockerfile --tag dsh-docker-services:test .
       - run: docker image inspect dsh-docker-services:test --format '{{json .Config.Entrypoint}} {{.Config.User}}'
-      - run: npm run test:compose-volumes
+      # Local Compose preserves host ownership for file-backed secrets. Run the
+      # disposable lifecycle as root so CI exercises the supported root-owned
+      # secret path instead of trusting the hosted runner's variable UID.
+      - run: sudo --preserve-env=PATH npm run test:compose-volumes
   sbom:
     needs: [verify, container]
     runs-on: ubuntu-latest
