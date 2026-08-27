@@ -65,6 +65,13 @@ subdirectories owned by `1000:1000` with mode `0700`. Each named volume is
 mounted at a parent path; Docker copies those seeded subdirectories into a
 truly empty volume on first use. Controller and proxy remain `1000:1000`,
 `cap_drop: ALL`, `no-new-privileges`, read-only-rootfs, and network-isolated.
+Local Compose implements file-backed secrets as bind mounts and does not remap
+their ownership. Provision `proxy-auth.key` and `audit-checkpoint.key` as
+regular, non-linked files owned by `1000:1000`, mode `0600`, on a host path
+whose ancestors are not group/world writable. The deploying administrator may
+be root, but the long-running services remain uid/gid 1000 and therefore can
+read only secrets provisioned for that identity. Do not loosen the files to
+group/world readability to work around an ownership mismatch.
 Do not reuse legacy volumes from the removed initializer: they lack the new
 subdirectory contract and the services fail closed. Migrate explicitly by
 stopping the stack, backing up the old volume data, creating fresh named

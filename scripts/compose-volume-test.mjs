@@ -1,5 +1,5 @@
 import {execFileSync, spawn} from 'node:child_process'
-import {mkdtemp, rm, writeFile} from 'node:fs/promises'
+import {chown, mkdtemp, rm, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import {randomBytes} from 'node:crypto'
@@ -29,6 +29,13 @@ const auth = path.join(temp, 'proxy-auth.key')
 const checkpoint = path.join(temp, 'audit-checkpoint.key')
 await writeFile(auth, randomBytes(64), {mode: 0o600})
 await writeFile(checkpoint, randomBytes(64), {mode: 0o600})
+// Local Compose implements file-backed secrets as bind mounts and cannot
+// remap uid/gid.  The reference services run as the image's fixed uid 1000,
+// so a root orchestration process must provision the test files for that uid.
+if (typeof process.getuid === 'function' && process.getuid() === 0) {
+  await chown(auth, 1000, 1000)
+  await chown(checkpoint, 1000, 1000)
+}
 await writeFile(path.join(temp, 'override.yaml'), `secrets:\n  proxy-auth-key:\n    file: ${JSON.stringify(auth)}\n  audit-checkpoint-key:\n    file: ${JSON.stringify(checkpoint)}\n`)
 
 try {
@@ -50,6 +57,8 @@ try {
   const proxy = output('ps', '-q', 'proxy')
   waitFor(() => inspect(controller, '{{.State.Health.Status}}') === 'healthy' && inspect(proxy, '{{.State.Health.Status}}') === 'healthy')
   if (inspect(controller, '{{.Config.User}}') !== '1000:1000' || inspect(proxy, '{{.Config.User}}') !== '1000:1000') throw new Error('runtime service is not unprivileged')
+  const secretMetadata = execFileSync('docker', ['compose', '-p', project, '-f', composeFile, '-f', path.join(temp, 'override.yaml'), 'exec', '-T', 'controller', 'sh', '-c', "stat -c '%u:%g:%a:%F' /run/secrets/proxy-auth-key /run/secrets/audit-checkpoint-key"], {cwd: root, encoding: 'utf8'}).trim().split('\n')
+  if (secretMetadata.some(value => value !== '1000:1000:600:regular file')) throw new Error(`unexpected runtime secret metadata: ${secretMetadata}`)
   const configMetadata = execFileSync('docker', ['compose', '-p', project, '-f', composeFile, '-f', path.join(temp, 'override.yaml'), 'exec', '-T', 'controller', 'sh', '-c', "stat -c '%u:%g:%a:%F' /etc/dsh-docker-services/controller.json /etc/dsh-docker-services/proxy.json"], {cwd: root, encoding: 'utf8'}).trim().split('\n')
   if (configMetadata.some(value => value !== '0:0:444:regular file')) throw new Error(`unexpected immutable config metadata: ${configMetadata}`)
   const capEff = id => execFileSync('docker', ['exec', id, 'sh', '-c', "awk '/^CapEff:/{print $2}' /proc/1/status"], {encoding: 'utf8'}).trim()
