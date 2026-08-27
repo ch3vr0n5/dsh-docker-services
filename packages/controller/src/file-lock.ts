@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto'
 import {constants as fsConstants} from 'node:fs'
-import {lstat, open, rename, unlink} from 'node:fs/promises'
+import {link, lstat, open, rename, unlink} from 'node:fs/promises'
 import path from 'node:path'
 import {patterns} from '@dsh-docker-services/shared'
 import {assertNoSymlinkComponents, ConflictError, ensureOwnedRoot, readProtectedFile} from './security.js'
@@ -42,16 +42,32 @@ export async function withFileLock<T>(root: string, purpose: string, options: Lo
   let ownedDevice: number | undefined
   let ownedInode: number | bigint | undefined
   for (;;) {
+    const candidate = path.join(root, `.${purpose}.${token}.${randomUUID()}.pending`)
+    let candidateHandle: Awaited<ReturnType<typeof open>> | undefined
+    let candidateDevice: number | undefined
+    let candidateInode: number | bigint | undefined
+    let published = false
     try {
-      const handle = await open(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600)
-      try {
-        const record: LockRecord = {version: 1, token, ownerPid: process.pid, expiresAt: Date.now() + options.leaseMs, purpose, ...(options.idempotencyKey ? {idempotencyKey: options.idempotencyKey} : {})}
-        await handle.chmod(0o600); await handle.writeFile(JSON.stringify(record)); await handle.sync()
-        const info = await handle.stat(); ownedHandle = handle; ownedRecord = record; ownedDevice = info.dev; ownedInode = info.ino
-      } catch (error) { await handle.close(); throw error }
+      const handle = await open(candidate, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600)
+      candidateHandle = handle
+      const record: LockRecord = {version: 1, token, ownerPid: process.pid, expiresAt: Date.now() + options.leaseMs, purpose, ...(options.idempotencyKey ? {idempotencyKey: options.idempotencyKey} : {})}
+      await handle.chmod(0o600); await handle.writeFile(JSON.stringify(record)); await handle.sync()
+      const info = await handle.stat(); candidateDevice = info.dev; candidateInode = info.ino
+      await link(candidate, target)
+      published = true
+      await unlink(candidate)
       await syncDirectory(root)
+      ownedHandle = handle; ownedRecord = record; ownedDevice = info.dev; ownedInode = info.ino
       break
     } catch (error) {
+      try { await candidateHandle?.close() } catch {}
+      if (published) {
+        try {
+          const current = await lstat(target)
+          if (current.dev === candidateDevice && current.ino === candidateInode) await unlink(target)
+        } catch (cleanupError) { if ((cleanupError as NodeJS.ErrnoException).code !== 'ENOENT') throw cleanupError }
+      }
+      try { await unlink(candidate) } catch (cleanupError) { if ((cleanupError as NodeJS.ErrnoException).code !== 'ENOENT') throw cleanupError }
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
       let existing: LockRecord
       try { existing = await readLock(target, purpose) } catch (readError) { if ((readError as NodeJS.ErrnoException).code === 'ENOENT') continue; throw readError }

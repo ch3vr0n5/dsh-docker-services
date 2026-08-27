@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "instance": "example-host",
-  "socketPath": "/run/dsh-docker-services/controller.sock",
+  "socketPath": "/run/dsh-docker-services-volume/socket/controller.sock",
   "socketMode": 384,
-  "docker": {"kind": "local", "binary": "/usr/local/bin/docker", "host": "unix:///var/run/docker.sock"},
+  "docker": {"kind": "local", "binary": "/usr/local/bin/docker", "host": "unix:///run/docker.sock"},
   "auth": {"kind": "hmac-proxy", "keyFile": "/run/secrets/proxy-auth-key", "issuer": "example-proxy", "audience": "example-host", "maxClockSkewSeconds": 30},
-  "audit": {"checkpointFile": "/var/lib/dsh-audit-checkpoint/checkpoint.json", "checkpointKeyFile": "/run/secrets/audit-checkpoint-key"},
-  "stateDir": "/var/lib/dsh-docker-services",
-  "secretRoot": "/var/lib/dsh-docker-services/secrets",
+  "audit": {"checkpointFile": "/var/lib/dsh-audit-checkpoint-volume/data/checkpoint.json", "checkpointKeyFile": "/run/secrets/audit-checkpoint-key"},
+  "stateDir": "/var/lib/dsh-docker-services-volume/state",
+  "secretRoot": "/var/lib/dsh-docker-services-volume/state/secrets",
   "roles": [
     {"name": "dsh-viewer", "capabilities": ["services:read", "secrets:status"]},
     {"name": "dsh-operator", "capabilities": ["services:read", "services:operate", "deploy:execute", "parameters:write", "secrets:status", "secrets:write", "secrets:test", "audit:read"]}
@@ -20,6 +20,6 @@
     "actions": ["inventory", "logs", "start", "stop", "restart", "deploy", "parameters:write", "secret:status", "secret:set", "secret:rotate", "secret:test"],
     "parameters": [{"key": "LOG_LEVEL", "label": "Log level", "type": "enum", "enum": ["info", "warn", "error"], "default": "info"}],
     "deploy": {"hook": "/usr/local/lib/dsh-docker-services/deploy-example-api", "repositories": ["https://git.example.invalid/team/example-api.git"], "branches": ["release"], "timeoutMs": 1800000, "leaseMs": 300000, "runtimePolicy": {"requireRunning": true, "requireHealthy": true}},
-    "secrets": [{"id": "api-token", "label": "API token", "target": "/var/lib/dsh-docker-services/secrets/example-api-token", "minLength": 16, "testHook": "/usr/local/lib/dsh-docker-services/test-example-api-token"}]
+    "secrets": [{"id": "api-token", "label": "API token", "target": "/var/lib/dsh-docker-services-volume/state/secrets/example-api-token", "minLength": 16, "testHook": "/usr/local/lib/dsh-docker-services/test-example-api-token"}]
   }]
 }

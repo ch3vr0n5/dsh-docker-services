@@ -1,4 +1,5 @@
 /** Versioned protocol shared by the unprivileged plugin and privileged controller. */
+export * from './proxy-protocol.js'
 export const protocolVersion = 1 as const
 export const serviceActions = ['inventory', 'logs', 'health', 'start', 'stop', 'restart', 'deploy', 'parameters:write', 'secret:set', 'secret:rotate', 'secret:test', 'secret:status'] as const
 export const capabilities = ['services:read', 'services:operate', 'deploy:execute', 'parameters:write', 'secrets:status', 'secrets:write', 'secrets:test', 'audit:read'] as const

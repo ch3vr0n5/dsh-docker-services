@@ -3,8 +3,13 @@
 ## Boundary
 
 The DSH plugin is unprivileged. It sends typed requests to an authenticating
-local proxy or mTLS terminator. That boundary forwards to the private controller
-socket with a short-lived HMAC assertion. Only the controller may access Docker
+local proxy or mTLS terminator. At startup the reference proxy verifies secure
+Unix-socket ancestry, opens a bounded connection pool, authenticates the
+controller with a fresh domain-separated HMAC challenge, and pins those exact
+connections for its lifetime. It never follows the controller pathname again
+or reconnects. That boundary forwards to the private controller over the pinned
+connections with short-lived HMAC assertions and per-request/response,
+purpose-separated MACs. Only the controller may access Docker
 or configured deploy/secret-test executables. No API accepts a command string,
 Docker endpoint, filesystem path, SSH target, or hook path.
 
@@ -18,8 +23,20 @@ modify those or control Docker is already privileged and outside this boundary.
   keys, hook paths, and remote targets are administrator allowlists.
 - RBAC uses the signed proxy assertion's actor and role. The controller rejects
   caller `x-dsh-actor`/`x-dsh-role` headers, verifies issuer, audience, time,
-  signature and nonce, and rejects replay using a durable, cross-process locked
-  nonce store. Only the trusted proxy may access the private socket and HMAC key.
+  signature and nonce, then validates a non-JSON byte-framed request MAC before
+  parsing or acting. That record covers the fixed identity, method, normalized
+  target, allowlisted headers, and exact body. A durable, cross-process locked
+  store rejects replays of its complete canonical digest. The response MAC is
+  bound to that request plus status, allowlisted headers, body, and terminal
+  outcome; the proxy buffers and verifies it before releasing output. Only the
+  trusted proxy may access the private socket and HMAC key.
+- The controller socket's protected parent is the filesystem authorization
+  boundary. Inode metadata is not treated as endpoint identity. Every pinned
+  lane proves key possession before the public proxy socket is bound; pathname
+  replacement after startup receives no traffic. Loss of a lane fails closed,
+  and recovery requires a proxy restart. Both controller and proxy output
+  sockets are created at their final mode under a narrow synchronous umask—there
+  is no bind-then-chmod window.
 - Local Docker uses a root-owned absolute binary, explicit validated Unix
   socket, minimal environment, bounded output/time, and fixed argument forms.
   SSH and mTLS use fixed destinations and bounded, cancellable JSON operations.
@@ -41,6 +58,12 @@ modify those or control Docker is already privileged and outside this boundary.
   stdout/stderr content is never copied into errors or logs, even after
   redaction; diagnostics contain only operation/classification, exit/signal,
   bounded byte counts, and a random execution correlation ID.
+- Fresh named volumes are populated by Docker from nonempty image-seeded
+  `state`, `socket`, and `data` directories. There is no runtime initializer,
+  root process, capability grant, or automatic repair path. Existing volumes
+  must satisfy the exact service-UID, mode-0700, regular-directory, and
+  non-symlink contract or startup fails closed; migration is an explicit
+  operator backup/restore procedure.
 
 ## Residual risks
 
@@ -49,4 +72,6 @@ allowed hook/image, compromised trusted proxy, operator identity, or host root
 can still operate configured services. Local files cannot resist a root attacker
 who also obtains the checkpoint key and off-host store. Pin images, isolate the
 proxy/controller, restrict egress, retain checkpoints independently, and review
-configuration/hook changes as production code.
+configuration/hook changes as production code. Processes running as the trusted
+socket/key owner are also inside this boundary; do not co-locate untrusted code
+under either service UID.

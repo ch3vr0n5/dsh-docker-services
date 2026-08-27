@@ -1,4 +1,4 @@
 {
-  "compilerOptions": {"composite": true, "declaration": true, "outDir": "lib", "rootDir": "src", "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext", "strict": true, "noUncheckedIndexedAccess": true, "skipLibCheck": true},
+  "compilerOptions": {"composite": true, "declaration": true, "outDir": "lib", "rootDir": "src", "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext", "strict": true, "noUncheckedIndexedAccess": true, "skipLibCheck": true, "types": ["node"]},
   "include": ["src"]
 }

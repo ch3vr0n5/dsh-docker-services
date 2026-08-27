@@ -1,7 +1,8 @@
 name: CI
 on:
+  workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, "feat/**", "fix/**"]
   pull_request:
 permissions:
   contents: read
@@ -27,5 +28,38 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.0.0
+          package-manager-cache: false
+      - run: npm install --global npm@11.12.1 --ignore-scripts
       - run: docker build --file examples/container/Dockerfile --tag dsh-docker-services:test .
       - run: docker image inspect dsh-docker-services:test --format '{{json .Config.Entrypoint}} {{.Config.User}}'
+      # Local Compose preserves host ownership for file-backed secrets. Run the
+      # disposable lifecycle as root so CI exercises the supported root-owned
+      # secret path instead of trusting the hosted runner's variable UID. Pass
+      # the setup-node PATH explicitly because sudo otherwise selects Ubuntu's
+      # unrelated system Node/npm toolchain.
+      - run: sudo env "PATH=$PATH" node scripts/compose-volume-test.mjs
+  sbom:
+    needs: [verify, container]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.0.0
+          package-manager-cache: false
+      - run: npm install --global npm@11.12.1 --ignore-scripts
+      - run: node scripts/verify-lockfile.mjs
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm run pack:all
+      - run: npm run sbom:generate
+      - run: npm run sbom:verify
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-sboms
+          path: artifacts/sbom/
+          if-no-files-found: error

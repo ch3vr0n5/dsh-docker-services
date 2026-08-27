@@ -3,6 +3,7 @@
   "references": [
     {"path": "packages/shared"},
     {"path": "packages/controller"},
+    {"path": "packages/proxy"},
     {"path": "packages/plugin"}
   ]
 }

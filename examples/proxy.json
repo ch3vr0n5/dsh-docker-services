@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "socketPath": "/run/dsh-docker-services-proxy-volume/socket/proxy.sock",
+  "controllerSocketPath": "/run/dsh-docker-services-volume/socket/controller.sock",
+  "keyFile": "/run/secrets/proxy-auth-key",
+  "issuer": "example-proxy",
+  "audience": "example-host",
+  "actor": "example-harness",
+  "role": "dsh-operator",
+  "controllerConnections": 4,
+  "assertionTtlSeconds": 30,
+  "socketMode": 384,
+  "requestTimeoutMs": 15000,
+  "maxRequestBytes": 65536,
+  "maxResponseBytes": 2097152
+}

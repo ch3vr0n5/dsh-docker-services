@@ -1,15 +1,16 @@
 {
-  "name": "@dsh-docker-services/controller",
+  "name": "@dsh-docker-services/proxy",
   "version": "0.1.1",
   "private": false,
   "type": "module",
   "main": "./lib/src/index.js",
   "types": "./lib/src/index.d.ts",
   "exports": {".": {"types": "./lib/src/index.d.ts", "default": "./lib/src/index.js"}, "./package.json": "./package.json"},
-  "bin": {"dsh-docker-services-controller": "./lib/src/main.js"},
+  "bin": {"dsh-docker-services-proxy": "./lib/src/main.js"},
   "files": ["lib/src/**/*.js", "lib/src/**/*.d.ts", "README.md", "LICENSE"],
   "scripts": {"build": "tsc -b"},
   "dependencies": {"@dsh-docker-services/shared": "0.1.1"},
+  "engines": {"node": "^22.19.0 || >=24.0.0"},
   "license": "Apache-2.0",
   "publishConfig": {"access": "public"}
 }

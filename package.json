@@ -1,24 +1,29 @@
 {
   "name": "dsh-docker-services",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Guarded Docker operations for DeepSeek Harness",
   "type": "module",
   "workspaces": ["packages/*"],
   "scripts": {
-    "clean": "node -e \"const fs=require('node:fs');for(const p of ['packages/shared/lib','packages/controller/lib','packages/plugin/lib','packages/shared/tsconfig.tsbuildinfo','packages/controller/tsconfig.tsbuildinfo','packages/plugin/tsconfig.tsbuildinfo','artifacts'])fs.rmSync(p,{recursive:true,force:true})\"",
+    "clean": "node -e \"const fs=require('node:fs');for(const p of ['packages/shared/lib','packages/controller/lib','packages/proxy/lib','packages/plugin/lib','packages/shared/tsconfig.tsbuildinfo','packages/controller/tsconfig.tsbuildinfo','packages/proxy/tsconfig.tsbuildinfo','packages/plugin/tsconfig.tsbuildinfo','artifacts'])fs.rmSync(p,{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -b --pretty false",
     "typecheck": "tsc -b --pretty false",
-    "test": "npm run build && node --test packages/controller/lib/test/*.test.js packages/plugin/lib/test/*.test.js",
-    "pack:all": "node -e \"require('node:fs').mkdirSync('artifacts',{recursive:true})\" && npm pack --workspace @dsh-docker-services/shared --pack-destination artifacts && npm pack --workspace @dsh-docker-services/controller --pack-destination artifacts && npm pack --workspace dsh-docker-services --pack-destination artifacts",
+    "test": "npm run build && node --test packages/controller/lib/test/*.test.js packages/proxy/lib/test/*.test.js packages/plugin/lib/test/*.test.js",
+    "pack:all": "node -e \"require('node:fs').mkdirSync('artifacts',{recursive:true})\" && npm pack --workspace @dsh-docker-services/shared --pack-destination artifacts && npm pack --workspace @dsh-docker-services/controller --pack-destination artifacts && npm pack --workspace @dsh-docker-services/proxy --pack-destination artifacts && npm pack --workspace dsh-docker-services --pack-destination artifacts",
     "verify:package": "node scripts/verify-package.mjs",
     "verify:lock": "node scripts/verify-lockfile.mjs",
     "test:consumer": "node scripts/consumer-test.mjs",
+    "test:dashboard-089": "node scripts/verify-dashboard-089.mjs",
+    "sbom:generate": "node scripts/sbom.mjs generate",
+    "sbom:verify": "node scripts/sbom.mjs verify",
     "test:container": "node scripts/container-test.mjs",
-    "ci": "npm run verify:lock && npm run typecheck && npm test && npm run pack:all && npm run verify:package && npm run test:consumer"
+    "test:compose-volumes": "node scripts/compose-volume-test.mjs",
+    "ci": "npm run verify:lock && npm run typecheck && npm test && npm run pack:all && npm run verify:package && npm run test:consumer && npm run test:dashboard-089"
   },
   "devDependencies": {
     "@types/node": "22.19.0",
+    "pnpm": "11.19.0",
     "typescript": "5.9.3"
   },
   "engines": {"node": "^22.19.0 || >=24.0.0"},

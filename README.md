@@ -21,6 +21,8 @@ remote-host access to the UI or model.
 - Signed trusted-proxy identity/RBAC, bounded opaque errors, protected redacted
   logs, fsynced hash-chained audit with keyed checkpoints, atomic no-follow
   writes, package/consumer/container checks, and CI.
+- A fixed-identity local proxy gives Harness only a private, authenticated
+  socket; the signing key and controller socket remain outside Harness.
 
 ## Quick start
 
@@ -28,6 +30,7 @@ remote-host access to the UI or model.
 npm ci --ignore-scripts
 npm run ci
 cp examples/controller.json /etc/dsh-docker-services/controller.json
+cp examples/proxy.json /etc/dsh-docker-services/proxy.json
 ```
 
 Then replace the example values, create the dedicated controller account and
@@ -38,6 +41,7 @@ hooks, and follow [deployment instructions](docs/DEPLOYMENT.md). Read the
 
 - `packages/plugin`: DSH plugin; no Docker or secret filesystem access.
 - `packages/controller`: privileged allowlist enforcement and adapters.
+- `packages/proxy`: unprivileged fixed-identity HMAC bridge for one Harness domain.
 - `packages/shared`: versioned protocol and configuration validation.
 - `examples`: host unit, container deployment, and generic configuration.
 
