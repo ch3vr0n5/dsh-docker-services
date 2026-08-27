@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "socketPath": "/run/dsh-docker-services-proxy/proxy.sock",
-  "controllerSocketPath": "/run/dsh-docker-services/controller.sock",
+  "socketPath": "/run/dsh-docker-services-proxy-volume/socket/proxy.sock",
+  "controllerSocketPath": "/run/dsh-docker-services-volume/socket/controller.sock",
   "keyFile": "/run/secrets/proxy-auth-key",
   "issuer": "example-proxy",
   "audience": "example-host",

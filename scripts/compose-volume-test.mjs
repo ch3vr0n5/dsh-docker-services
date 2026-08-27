@@ -31,27 +31,26 @@ await writeFile(auth, randomBytes(64), {mode: 0o600})
 await writeFile(checkpoint, randomBytes(64), {mode: 0o600})
 await writeFile(path.join(temp, 'override.yaml'), `secrets:\n  proxy-auth-key:\n    file: ${JSON.stringify(auth)}\n  audit-checkpoint-key:\n    file: ${JSON.stringify(checkpoint)}\n`)
 
-let initId
 try {
   compose('config', '--quiet')
   compose('build')
+  // Remove any prior named volumes so Docker's first-use population behavior
+  // is exercised, rather than an already-initialized volume.
+  compose('down', '-v', '--remove-orphans')
   // Compose has no cross-process create lock: one concurrent caller may lose
   // the harmless container-name race. The successful caller must still leave
   // a recoverable project, and a normal retry must converge to one instance.
   const attempts = await Promise.allSettled([composeAsync('up', '-d'), composeAsync('up', '-d')])
   if (!attempts.some(attempt => attempt.status === 'fulfilled')) throw new Error('all concurrent Compose startups failed')
   compose('up', '-d')
-  waitFor(() => {
-    initId = output('ps', '-a', '-q', 'volume-init')
-    return Boolean(initId) && inspect(initId, '{{.State.Status}} {{.State.ExitCode}}') === 'exited 0'
-  })
   const controller = output('ps', '-q', 'controller')
   const proxy = output('ps', '-q', 'proxy')
   waitFor(() => inspect(controller, '{{.State.Health.Status}}') === 'healthy' && inspect(proxy, '{{.State.Health.Status}}') === 'healthy')
-  if (inspect(initId, '{{.Config.User}}') !== '0:0') throw new Error('volume-init did not run as root')
   if (inspect(controller, '{{.Config.User}}') !== '1000:1000' || inspect(proxy, '{{.Config.User}}') !== '1000:1000') throw new Error('runtime service is not unprivileged')
-  const controllerRoots = '/var/lib/dsh-docker-services /run/dsh-docker-services /var/lib/dsh-audit-checkpoint'
-  const proxyRoot = '/run/dsh-docker-services-proxy'
+  const capEff = id => execFileSync('docker', ['exec', id, 'sh', '-c', "awk '/^CapEff:/{print $2}' /proc/1/status"], {encoding: 'utf8'}).trim()
+  if (capEff(controller) !== '0000000000000000' || capEff(proxy) !== '0000000000000000') throw new Error(`runtime capabilities were not fully dropped: ${capEff(controller)} ${capEff(proxy)}`)
+  const controllerRoots = '/var/lib/dsh-docker-services-volume/state /run/dsh-docker-services-volume/socket /var/lib/dsh-audit-checkpoint-volume/data'
+  const proxyRoot = '/run/dsh-docker-services-proxy-volume/socket'
   const controllerMetadata = execFileSync('docker', ['compose', '-p', project, '-f', composeFile, '-f', path.join(temp, 'override.yaml'), 'exec', '-T', 'controller', 'sh', '-c', `stat -c '%u:%g:%a:%F' ${controllerRoots}`], {cwd: root, encoding: 'utf8'}).trim().split('\n')
   if (controllerMetadata.some(value => value !== '1000:1000:700:directory')) throw new Error(`unexpected controller volume metadata: ${controllerMetadata}`)
   const proxyMetadata = execFileSync('docker', ['compose', '-p', project, '-f', composeFile, '-f', path.join(temp, 'override.yaml'), 'exec', '-T', 'proxy', 'sh', '-c', `stat -c '%u:%g:%a:%F' ${proxyRoot}`], {cwd: root, encoding: 'utf8'}).trim()
@@ -60,8 +59,8 @@ try {
   waitFor(() => inspect(output('ps', '-q', 'controller'), '{{.State.Health.Status}}') === 'healthy')
   compose('restart', 'proxy')
   waitFor(() => inspect(output('ps', '-q', 'proxy'), '{{.State.Health.Status}}') === 'healthy')
-  if (inspect(initId, '{{.State.Status}} {{.State.ExitCode}}') !== 'exited 0') throw new Error('volume-init changed after restart')
-  console.log('verified clean named-volume init, health, ownership/modes, restart, and runtime users')
+  if (capEff(output('ps', '-q', 'controller')) !== '0000000000000000' || capEff(output('ps', '-q', 'proxy')) !== '0000000000000000') throw new Error('restart restored capabilities')
+  console.log('verified absent named volumes, Docker seed population, health, ownership/modes, restart, zero capabilities, and runtime users')
 } finally {
   try { compose('down', '-v', '--remove-orphans') } finally { await rm(temp, {recursive: true, force: true}) }
 }
