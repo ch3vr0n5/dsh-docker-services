@@ -20,15 +20,29 @@ reconnected. A controller restart intentionally makes the proxy unavailable;
 restart the proxy to create a newly authenticated pool. Keep controller and
 proxy socket parents owned by their service UID and non-group/world-writable.
 
-The proxy sets only `x-dsh-proxy-assertion` on forwarded operations. Its value is
-`base64url(UTF-8 JSON) + "." + base64url(HMAC-SHA256(key, encoded JSON))`.
+The proxy sets only its own protocol headers on forwarded operations; it never
+forwards client identity or authentication headers. The assertion value is
+`base64url(UTF-8 JSON) + "." + base64url(HMAC-SHA256(derived assertion key,
+encoded JSON))`.
 `iat`/`exp` are finite integer Unix seconds with at most a five-minute assertion
-lifetime, actor/role/nonce are bounded identifiers, and each nonce is single-use.
-Replay state is durably stored below `stateDir/auth-replay`, survives controller
+lifetime, actor/role/nonce are bounded identifiers, and every request record's
+ID/nonce pair is single-use. Replay state is durably stored below `stateDir/auth-replay`, survives controller
 restart, and is serialized across controller processes. The exported
 `signProxyAssertion` helper is the reference implementation. The proxy must
 remove any assertion or identity header received from its client before adding
 its own.
+
+Ordinary traffic uses protocol version 1 and a deterministic binary canonical
+record: request ID and nonce, fixed actor/role, `GET`/`POST`, normalized
+origin-form path/query, an explicit `content-type`/`content-length` allowlist,
+and exact SHA-256 body digest/length. The controller verifies that record before
+parsing JSON or calling an operation, and durably rejects a replay of its full
+canonical digest. Its complete response carries a separately derived response
+MAC bound to the original request ID/nonce/digest, status, explicitly
+allowlisted response headers, response digest/length, and `ok`/`error` terminal
+outcome. The proxy buffers within its response bound and rejects missing,
+replayed, truncated, extra-framed, or mismatched responses with an opaque 502;
+it never forward-streams privileged controller output.
 
 The `@dsh-docker-services/proxy` package and `examples/proxy.json` are the
 reference implementation. Run one proxy per Harness trust domain with a fixed

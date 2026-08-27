@@ -1,8 +1,8 @@
-import { constants, createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
+import { constants, createHash, randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, readFile, realpath, rename, stat } from 'node:fs/promises'
 import path from 'node:path'
 import type { AuthConfig, ControllerConfig } from '@dsh-docker-services/shared'
-import { patterns, redact } from '@dsh-docker-services/shared'
+import {patterns, redact, normalizeMethod, normalizeTarget, proxyProtocolVersion, requestCanonical, responseCanonical, selectedHeaders, sha256Hex, signMac, verifyMac, type RequestBinding, type ResponseBinding} from '@dsh-docker-services/shared'
 import {withFileLock} from './file-lock.js'
 
 const fsConstants = (await import('node:fs')).constants
@@ -22,26 +22,31 @@ export async function durableAtomicWrite(target: string, contents: string | Buff
 
 export type AuthenticatedIdentity = { actor: string; role: string; capabilities: ControllerConfig['roles'][number]['capabilities'] }
 type Assertion = { iss: string; aud: string; sub: string; role: string; iat: number; exp: number; nonce: string }
-const controllerProofDomain = 'dsh-docker-services/controller-proof/v1\n'
-export function signControllerProof(key: Buffer, challenge: string): string { return createHmac('sha256', key).update(controllerProofDomain).update(challenge).digest('base64url') }
+export type AuthenticatedRequest = { identity: AuthenticatedIdentity; binding: RequestBinding; digest: string }
+export function signControllerProof(key: Buffer, challenge: string): string { return signMac(key, 'handshake', Buffer.from(challenge, 'ascii')) }
 class NonceReplayStore {
   private constructor(private readonly root: string, private readonly file: string, private readonly maximumEntries: number) {}
   static async create(root: string, maximumEntries = 10_000): Promise<NonceReplayStore> { await ensureOwnedRoot(root); return new NonceReplayStore(root, path.join(root, 'nonces.json'), maximumEntries) }
-  async consume(nonce: string, expiresAt: number, now: number): Promise<void> {
+  async consume(binding: string, expiresAt: number, now: number): Promise<void> {
     await withFileLock(this.root, 'nonce-replay', {leaseMs: 30_000, waitMs: 5_000}, async () => {
       let values: Record<string, number> = {}
       try {
         const parsed = JSON.parse((await readProtectedFile(this.file, 1024 * 1024)).toString('utf8')) as {version?: unknown; nonces?: unknown}
-        if (parsed.version !== 1 || !parsed.nonces || typeof parsed.nonces !== 'object' || Array.isArray(parsed.nonces)) throw new Error('invalid nonce replay state')
-        for (const [key, value] of Object.entries(parsed.nonces)) {
-          if (!patterns.idempotencyKey.test(key) || !Number.isSafeInteger(value)) throw new Error('invalid nonce replay state')
+        if (!parsed.nonces || typeof parsed.nonces !== 'object' || Array.isArray(parsed.nonces)) throw new Error('invalid nonce replay state')
+        if (parsed.version === 1) {
+          for (const [key, value] of Object.entries(parsed.nonces)) if (!patterns.idempotencyKey.test(key) || !Number.isSafeInteger(value)) throw new Error('invalid legacy nonce replay state')
+          // v1 assertions use a different derived MAC key and cannot validate on
+          // this protocol. Their replay entries may therefore be safely retired.
+        } else if (parsed.version !== 2) throw new Error('invalid nonce replay state')
+        else for (const [key, value] of Object.entries(parsed.nonces)) {
+          if (!/^[0-9a-f]{64}$/.test(key) || !Number.isSafeInteger(value)) throw new Error('invalid nonce replay state')
           if ((value as number) >= now) values[key] = value as number
         }
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-      if (Object.hasOwn(values, nonce)) throw new SafeError('unauthorized', 401, 'proxy assertion replayed')
+      if (Object.hasOwn(values, binding)) throw new SafeError('unauthorized', 401, 'proxy request replayed')
       if (Object.keys(values).length >= this.maximumEntries) throw new SafeError('unavailable', 503, 'nonce replay state capacity reached')
-      values[nonce] = expiresAt
-      await durableAtomicWrite(this.file, JSON.stringify({version: 1, nonces: values}))
+      values[binding] = expiresAt
+      await durableAtomicWrite(this.file, JSON.stringify({version: 2, nonces: values}))
     })
   }
 }
@@ -49,24 +54,50 @@ export class HmacProxyAuthenticator {
   private constructor(private readonly config: AuthConfig, private readonly roles: ControllerConfig['roles'], private readonly key: Buffer, private readonly replay: NonceReplayStore) {}
   static async create(config: AuthConfig, roles: ControllerConfig['roles'], replayRoot: string): Promise<HmacProxyAuthenticator> { const key = await readProtectedFile(config.keyFile, 4096); if (key.length < 32) throw new Error('proxy authentication key must contain at least 32 bytes'); return new HmacProxyAuthenticator(config, roles, key, await NonceReplayStore.create(replayRoot)) }
   proveController(challenge: string): string { return signControllerProof(this.key, challenge) }
-  async authenticate(headers: Record<string, string | string[] | undefined>): Promise<AuthenticatedIdentity> {
+  private assertion(headers: Record<string, string | string[] | undefined>): {identity: AuthenticatedIdentity; expiresAt: number} {
     if (headers['x-dsh-actor'] !== undefined || headers['x-dsh-role'] !== undefined) throw new SafeError('unauthorized', 401, 'caller identity headers are forbidden')
     const raw = headers['x-dsh-proxy-assertion']; if (typeof raw !== 'string' || raw.length > 4096) throw new SafeError('unauthorized', 401, 'missing proxy assertion')
     const [encoded, signature, extra] = raw.split('.'); if (!encoded || !signature || extra) throw new SafeError('unauthorized', 401, 'malformed proxy assertion')
-    const expected = createHmac('sha256', this.key).update(encoded).digest(); let actual: Buffer
-    try { actual = Buffer.from(signature, 'base64url') } catch { throw new SafeError('unauthorized', 401, 'malformed proxy signature') }
-    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new SafeError('unauthorized', 401, 'invalid proxy signature')
+    if (!verifyMac(this.key, 'assertion', Buffer.from(encoded, 'ascii'), signature)) throw new SafeError('unauthorized', 401, 'invalid proxy signature')
     let assertion: Assertion; try { assertion = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) } catch { throw new SafeError('unauthorized', 401, 'invalid proxy assertion JSON') }
     if (!assertion || typeof assertion !== 'object' || Array.isArray(assertion)) throw new SafeError('unauthorized', 401, 'invalid proxy assertion JSON')
     const now = Math.floor(Date.now() / 1000); const skew = this.config.maxClockSkewSeconds ?? 30
     const validTimes = Number.isFinite(assertion.iat) && Number.isSafeInteger(assertion.iat) && Number.isFinite(assertion.exp) && Number.isSafeInteger(assertion.exp) && assertion.exp > assertion.iat && assertion.exp - assertion.iat <= 300 && assertion.iat >= now - 300 - skew && assertion.iat <= now + skew && assertion.exp >= now - skew && assertion.exp <= now + 300 + skew
     if (assertion.iss !== this.config.issuer || assertion.aud !== this.config.audience || !patterns.identifier.test(assertion.sub) || !patterns.identifier.test(assertion.role) || !patterns.idempotencyKey.test(assertion.nonce) || !validTimes) throw new SafeError('unauthorized', 401, 'proxy assertion claims rejected')
     const role = this.roles.find(candidate => candidate.name === assertion.role); if (!role) throw new SafeError('forbidden', 403, 'unknown authenticated role')
-    await this.replay.consume(assertion.nonce, assertion.exp + skew, now)
-    return {actor: assertion.sub, role: role.name, capabilities: role.capabilities}
+    return {identity: {actor: assertion.sub, role: role.name, capabilities: role.capabilities}, expiresAt: assertion.exp + skew}
+  }
+  async authenticate(headers: Record<string, string | string[] | undefined>): Promise<AuthenticatedIdentity> {
+    const assertion = this.assertion(headers)
+    const key = createHash('sha256').update('handshake\0').update(headers['x-dsh-proxy-assertion'] as string).digest('hex')
+    await this.replay.consume(key, assertion.expiresAt, Math.floor(Date.now() / 1000))
+    return assertion.identity
+  }
+  async authenticateRequest(headers: Record<string, string | string[] | undefined>, methodInput: string, targetInput: string, rawBody: Buffer): Promise<AuthenticatedRequest> {
+    const assertion = this.assertion(headers)
+    const version = headers['x-dsh-protocol-version']; const requestId = headers['x-dsh-request-id']; const nonce = headers['x-dsh-request-nonce']; const mac = headers['x-dsh-request-mac']
+    if (version !== String(proxyProtocolVersion) || typeof requestId !== 'string' || typeof nonce !== 'string' || typeof mac !== 'string') throw new SafeError('unauthorized', 401, 'missing proxy request binding')
+    let method: string; let target: string; let binding: RequestBinding
+    try {
+      method = normalizeMethod(methodInput); target = normalizeTarget(targetInput)
+      const values: Record<string, string | string[] | undefined> = {'content-type': headers['content-type'], 'content-length': headers['content-length']}
+      const canonicalHeaders = selectedHeaders(values, ['content-type', 'content-length'])
+      const length = canonicalHeaders['content-length']; if (typeof length !== 'string' || !/^(?:0|[1-9][0-9]{0,8})$/.test(length) || Number(length) !== rawBody.length) throw new Error('request length rejected')
+      binding = {protocolVersion: proxyProtocolVersion, requestId, nonce, actor: assertion.identity.actor, role: assertion.identity.role, method, target, headers: canonicalHeaders, bodyDigest: sha256Hex(rawBody), bodyLength: rawBody.length}
+    } catch { throw new SafeError('unauthorized', 401, 'proxy request binding rejected') }
+    const canonical = requestCanonical(binding)
+    if (!verifyMac(this.key, 'request', canonical, mac)) throw new SafeError('unauthorized', 401, 'proxy request MAC rejected')
+    const digest = sha256Hex(canonical)
+    await this.replay.consume(digest, assertion.expiresAt, Math.floor(Date.now() / 1000))
+    return {identity: assertion.identity, binding, digest}
+  }
+  signResponse(request: AuthenticatedRequest, status: number, headers: Record<string, string | undefined>, payload: Buffer): {binding: ResponseBinding; mac: string} {
+    const outcome = status >= 200 && status < 300 ? 'ok' : 'error'
+    const binding: ResponseBinding = {protocolVersion: proxyProtocolVersion, requestId: request.binding.requestId, nonce: request.binding.nonce, requestDigest: request.digest, status, headers: selectedHeaders(headers, ['content-type', 'content-length', 'cache-control', 'x-content-type-options', 'x-request-id']), bodyDigest: sha256Hex(payload), bodyLength: payload.length, outcome}
+    return {binding, mac: signMac(this.key, 'response', responseCanonical(binding))}
   }
 }
-export function signProxyAssertion(key: Buffer, assertion: Assertion): string { const encoded = Buffer.from(JSON.stringify(assertion)).toString('base64url'); return `${encoded}.${createHmac('sha256', key).update(encoded).digest('base64url')}` }
+export function signProxyAssertion(key: Buffer, assertion: Assertion): string { const encoded = Buffer.from(JSON.stringify(assertion)).toString('base64url'); return `${encoded}.${signMac(key, 'assertion', Buffer.from(encoded, 'ascii'))}` }
 
 const commandOperations = new Set(['generic', 'docker', 'deploy-hook', 'secret-test-hook', 'ssh-transport'])
 const commandClassifications = new Set(['spawn_error', 'stdin_error', 'nonzero_exit', 'timeout', 'cancelled', 'stdout_limit', 'stderr_limit', 'input_limit'])

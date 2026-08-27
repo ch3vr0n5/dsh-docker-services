@@ -8,7 +8,8 @@ Unix-socket ancestry, opens a bounded connection pool, authenticates the
 controller with a fresh domain-separated HMAC challenge, and pins those exact
 connections for its lifetime. It never follows the controller pathname again
 or reconnects. That boundary forwards to the private controller over the pinned
-connections with short-lived HMAC assertions. Only the controller may access Docker
+connections with short-lived HMAC assertions and per-request/response,
+purpose-separated MACs. Only the controller may access Docker
 or configured deploy/secret-test executables. No API accepts a command string,
 Docker endpoint, filesystem path, SSH target, or hook path.
 
@@ -22,8 +23,13 @@ modify those or control Docker is already privileged and outside this boundary.
   keys, hook paths, and remote targets are administrator allowlists.
 - RBAC uses the signed proxy assertion's actor and role. The controller rejects
   caller `x-dsh-actor`/`x-dsh-role` headers, verifies issuer, audience, time,
-  signature and nonce, and rejects replay using a durable, cross-process locked
-  nonce store. Only the trusted proxy may access the private socket and HMAC key.
+  signature and nonce, then validates a non-JSON byte-framed request MAC before
+  parsing or acting. That record covers the fixed identity, method, normalized
+  target, allowlisted headers, and exact body. A durable, cross-process locked
+  store rejects replays of its complete canonical digest. The response MAC is
+  bound to that request plus status, allowlisted headers, body, and terminal
+  outcome; the proxy buffers and verifies it before releasing output. Only the
+  trusted proxy may access the private socket and HMAC key.
 - The controller socket's protected parent is the filesystem authorization
   boundary. Inode metadata is not treated as endpoint identity. Every pinned
   lane proves key possession before the public proxy socket is bound; pathname

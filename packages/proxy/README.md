@@ -9,5 +9,10 @@ restart. Path replacement therefore cannot redirect live privileged traffic.
 
 The proxy ignores caller identity headers, attaches a unique short-lived signed
 assertion for one configured actor and role, and forwards only bounded requests.
+Every ordinary request is separately MAC-bound with a binary, versioned
+canonical record of its request ID/nonce, fixed identity, method, normalized
+path/query, allowlisted headers, and exact body digest/length. The controller
+buffers and MAC-binds the complete response back to that request before the
+proxy forwards any byte to Harness.
 It has no Docker socket, deployment hook, service secret root, or model-facing
 configuration. Run a separate instance and signing key per trust domain.
