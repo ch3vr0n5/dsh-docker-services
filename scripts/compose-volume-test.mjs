@@ -64,6 +64,11 @@ try {
   waitFor(() => inspect(output('ps', '-q', 'proxy'), '{{.State.Health.Status}}') === 'healthy')
   if (capEff(output('ps', '-q', 'controller')) !== '0000000000000000' || capEff(output('ps', '-q', 'proxy')) !== '0000000000000000') throw new Error('restart restored capabilities')
   console.log('verified absent named volumes, Docker seed population, health, ownership/modes, restart, zero capabilities, and runtime users')
+} catch (error) {
+  // Preserve startup evidence in CI before the finally block removes the
+  // disposable containers and volumes.
+  try { compose('logs', '--no-color', 'controller', 'proxy') } catch {}
+  throw error
 } finally {
   try { compose('down', '-v', '--remove-orphans') } finally { await rm(temp, {recursive: true, force: true}) }
 }
