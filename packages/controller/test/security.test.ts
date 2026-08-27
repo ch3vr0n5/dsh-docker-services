@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import {createHmac} from 'node:crypto'
-import {chmod, lstat, mkdir, mkdtemp, readFile, realpath, symlink, truncate, writeFile} from 'node:fs/promises'
+import {chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, symlink, truncate, writeFile} from 'node:fs/promises'
 import {execFile} from 'node:child_process'
 import {promisify} from 'node:util'
 import http from 'node:http'
@@ -40,7 +40,7 @@ test('audit appends are serialized, fsynced/checkpointed, and truncation is unhe
 test('audit appends remain one valid chain across two OS processes', async () => {
   const root = await secureRoot(); const state = path.join(root, 'state'); const checkpoint = path.join(root, 'offhost', 'checkpoint.json'); const keyFile = path.join(root, 'audit.key'); await writeFile(keyFile, 'q'.repeat(32), {mode: 0o600}); const helper = new URL('./helpers/audit-writer.js', import.meta.url); const run = promisify(execFile)
   await Promise.all([run(process.execPath, [helper.pathname, state, checkpoint, keyFile, 'left', '25']), run(process.execPath, [helper.pathname, state, checkpoint, keyFile, 'right', '25'])])
-  const audit = await AuditLog.create(state, await KeyedFileCheckpointSink.create(checkpoint, keyFile)); const entries = await audit.read(100); assert.equal(entries.length, 50); assert.deepEqual(entries.map(entry => entry.sequence), Array.from({length: 50}, (_, index) => index + 1)); assert.equal(audit.health().healthy, true)
+  const audit = await AuditLog.create(state, await KeyedFileCheckpointSink.create(checkpoint, keyFile)); const entries = await audit.read(100); assert.equal(entries.length, 50); assert.deepEqual(entries.map(entry => entry.sequence), Array.from({length: 50}, (_, index) => index + 1)); assert.equal(audit.health().healthy, true); assert.deepEqual((await readdir(path.join(state, 'audit'))).filter(name => name.endsWith('.lock') || name.endsWith('.pending')), [])
 })
 test('deployment leases return typed conflicts and expired leases are recoverable', async () => {
   const root = await secureRoot(); const manager = new LeaseLockManager(root); let release!: () => void; const held = manager.withLease('api', 'request-0000000001', 5_000, () => new Promise<void>(resolve => { release = resolve })); while (!release) await new Promise(resolve => setImmediate(resolve)); await assert.rejects(() => manager.withLease('api', 'request-0000000002', 5_000, async () => undefined), (error: unknown) => error instanceof ConflictError && error.status === 409); release(); await held

@@ -9,7 +9,6 @@ services:
     network_mode: none
     volumes:
       - /var/run/docker.sock:/run/docker.sock:rw
-      - ../controller.json:/etc/dsh-docker-services/controller.json:ro
       - controller-state:/var/lib/dsh-docker-services-volume
       - controller-run:/run/dsh-docker-services-volume
       - audit-checkpoint:/var/lib/dsh-audit-checkpoint-volume
@@ -35,7 +34,6 @@ services:
     user: "1000:1000"
     network_mode: none
     volumes:
-      - ../proxy.json:/etc/dsh-docker-services/proxy.json:ro
       - controller-run:/run/dsh-docker-services-volume:ro
       - proxy-run:/run/dsh-docker-services-proxy-volume
     secrets:

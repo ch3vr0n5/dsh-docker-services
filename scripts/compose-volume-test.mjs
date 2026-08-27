@@ -50,6 +50,8 @@ try {
   const proxy = output('ps', '-q', 'proxy')
   waitFor(() => inspect(controller, '{{.State.Health.Status}}') === 'healthy' && inspect(proxy, '{{.State.Health.Status}}') === 'healthy')
   if (inspect(controller, '{{.Config.User}}') !== '1000:1000' || inspect(proxy, '{{.Config.User}}') !== '1000:1000') throw new Error('runtime service is not unprivileged')
+  const configMetadata = execFileSync('docker', ['compose', '-p', project, '-f', composeFile, '-f', path.join(temp, 'override.yaml'), 'exec', '-T', 'controller', 'sh', '-c', "stat -c '%u:%g:%a:%F' /etc/dsh-docker-services/controller.json /etc/dsh-docker-services/proxy.json"], {cwd: root, encoding: 'utf8'}).trim().split('\n')
+  if (configMetadata.some(value => value !== '0:0:444:regular file')) throw new Error(`unexpected immutable config metadata: ${configMetadata}`)
   const capEff = id => execFileSync('docker', ['exec', id, 'sh', '-c', "awk '/^CapEff:/{print $2}' /proc/1/status"], {encoding: 'utf8'}).trim()
   if (capEff(controller) !== '0000000000000000' || capEff(proxy) !== '0000000000000000') throw new Error(`runtime capabilities were not fully dropped: ${capEff(controller)} ${capEff(proxy)}`)
   const controllerRoots = '/var/lib/dsh-docker-services-volume/state /run/dsh-docker-services-volume/socket /var/lib/dsh-audit-checkpoint-volume/data'
@@ -63,7 +65,7 @@ try {
   compose('restart', 'proxy')
   waitFor(() => inspect(output('ps', '-q', 'proxy'), '{{.State.Health.Status}}') === 'healthy')
   if (capEff(output('ps', '-q', 'controller')) !== '0000000000000000' || capEff(output('ps', '-q', 'proxy')) !== '0000000000000000') throw new Error('restart restored capabilities')
-  console.log('verified absent named volumes, Docker seed population, health, ownership/modes, restart, zero capabilities, and runtime users')
+  console.log('verified immutable configs, absent named volumes, Docker seed population, health, ownership/modes, restart, zero capabilities, and runtime users')
 } catch (error) {
   // Preserve startup evidence in CI before the finally block removes the
   // disposable containers and volumes.

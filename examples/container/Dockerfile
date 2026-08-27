@@ -17,9 +17,12 @@ COPY --from=build /app/packages/controller/package.json ./packages/controller/pa
 COPY --from=build /app/packages/controller/lib ./packages/controller/lib
 COPY --from=build /app/packages/proxy/package.json ./packages/proxy/package.json
 COPY --from=build /app/packages/proxy/lib ./packages/proxy/lib
+COPY examples/controller.json /etc/dsh-docker-services/controller.json
+COPY examples/proxy.json /etc/dsh-docker-services/proxy.json
 RUN mkdir -p /run/dsh-docker-services-volume/socket /run/dsh-docker-services-proxy-volume/socket /var/lib/dsh-docker-services-volume/state /var/lib/dsh-audit-checkpoint-volume/data \
     && chown -R node:node /run/dsh-docker-services-volume/socket /run/dsh-docker-services-proxy-volume/socket /var/lib/dsh-docker-services-volume/state /var/lib/dsh-audit-checkpoint-volume/data \
-    && chmod 0700 /run/dsh-docker-services-volume/socket /run/dsh-docker-services-proxy-volume/socket /var/lib/dsh-docker-services-volume/state /var/lib/dsh-audit-checkpoint-volume/data
+    && chmod 0700 /run/dsh-docker-services-volume/socket /run/dsh-docker-services-proxy-volume/socket /var/lib/dsh-docker-services-volume/state /var/lib/dsh-audit-checkpoint-volume/data \
+    && chmod 0444 /etc/dsh-docker-services/controller.json /etc/dsh-docker-services/proxy.json
 USER node
 ENTRYPOINT ["node", "packages/controller/lib/src/main.js"]
 CMD ["/etc/dsh-docker-services/controller.json"]
