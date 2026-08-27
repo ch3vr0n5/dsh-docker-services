@@ -58,6 +58,12 @@ modify those or control Docker is already privileged and outside this boundary.
   stdout/stderr content is never copied into errors or logs, even after
   redaction; diagnostics contain only operation/classification, exit/signal,
   bounded byte counts, and a random execution correlation ID.
+- Fresh named-volume setup is isolated in a one-shot root initializer using the
+  already admitted image. It has no network, Docker socket, secrets, or broad
+  host mount, drops every capability except the three needed to inspect and
+  repair ownership and mode, validates exact non-symlink volume roots, and exits before the
+  unprivileged services start. The service cannot be used as an ongoing root
+  runtime.
 
 ## Residual risks
 

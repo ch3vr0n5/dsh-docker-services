@@ -18,6 +18,7 @@
     "sbom:generate": "node scripts/sbom.mjs generate",
     "sbom:verify": "node scripts/sbom.mjs verify",
     "test:container": "node scripts/container-test.mjs",
+    "test:compose-volumes": "node scripts/compose-volume-test.mjs",
     "ci": "npm run verify:lock && npm run typecheck && npm test && npm run pack:all && npm run verify:package && npm run test:consumer && npm run test:dashboard-089"
   },
   "devDependencies": {

@@ -3,7 +3,7 @@
   "instance": "example-host",
   "socketPath": "/run/dsh-docker-services/controller.sock",
   "socketMode": 384,
-  "docker": {"kind": "local", "binary": "/usr/local/bin/docker", "host": "unix:///var/run/docker.sock"},
+  "docker": {"kind": "local", "binary": "/usr/local/bin/docker", "host": "unix:///run/docker.sock"},
   "auth": {"kind": "hmac-proxy", "keyFile": "/run/secrets/proxy-auth-key", "issuer": "example-proxy", "audience": "example-host", "maxClockSkewSeconds": 30},
   "audit": {"checkpointFile": "/var/lib/dsh-audit-checkpoint/checkpoint.json", "checkpointKeyFile": "/run/secrets/audit-checkpoint-key"},
   "stateDir": "/var/lib/dsh-docker-services",

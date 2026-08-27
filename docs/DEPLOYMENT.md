@@ -59,6 +59,17 @@ and supplies a bounded `close()` method. There is no public unbound-server API.
 For host installation, install the controller package and systemd example, add
 the dedicated account's narrowly required Docker access, then enable the unit.
 For containers, use the repository-root build context in the Compose example.
+The reference Compose deployment has a short-lived `volume-init` service for
+fresh named volumes. It uses the same admitted image, runs only as root with
+`CHOWN`/`FOWNER`/`DAC_OVERRIDE` needed to repair a pre-populated volume, has no network, Docker socket, secrets, or host paths, and
+exits after setting the four volume roots to controller UID/GID `1000:1000`
+and mode `0700`. Controller and proxy start only after successful completion
+and remain unprivileged/network-isolated. The initializer repairs only those
+mount roots, rejects symlinks or unexpected paths, serializes concurrent starts,
+and is not restarted after completion.
+The example uses `/run/docker.sock` inside the controller because the Alpine
+runtime rejects symlinked socket path components; the host-side
+`/var/run/docker.sock` path remains the conventional Docker socket.
 The image and actions are digest/SHA pinned. A mounted Docker socket remains
 host-privileged; prefer the constrained SSH or mTLS adapter across hosts.
 

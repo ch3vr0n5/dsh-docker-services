@@ -1,4 +1,27 @@
 services:
+  volume-init:
+    build:
+      context: ../..
+      dockerfile: examples/container/Dockerfile
+    entrypoint: ["/usr/local/bin/dsh-init-volumes"]
+    command:
+      - /var/lib/dsh-docker-services
+      - /run/dsh-docker-services
+      - /run/dsh-docker-services-proxy
+      - /var/lib/dsh-audit-checkpoint
+    read_only: true
+    restart: "no"
+    user: "0:0"
+    network_mode: none
+    volumes:
+      - controller-state:/var/lib/dsh-docker-services
+      - controller-run:/run/dsh-docker-services
+      - proxy-run:/run/dsh-docker-services-proxy
+      - audit-checkpoint:/var/lib/dsh-audit-checkpoint
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
   controller:
     build:
       context: ../..
@@ -8,7 +31,7 @@ services:
     user: "1000:1000"
     network_mode: none
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - /var/run/docker.sock:/run/docker.sock:rw
       - ../controller.json:/etc/dsh-docker-services/controller.json:ro
       - controller-state:/var/lib/dsh-docker-services
       - controller-run:/run/dsh-docker-services
@@ -24,6 +47,9 @@ services:
       interval: 10s
       timeout: 3s
       retries: 12
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
   proxy:
     build:
       context: ../..
@@ -44,6 +70,8 @@ services:
       - no-new-privileges:true
     cap_drop: [ALL]
     depends_on:
+      volume-init:
+        condition: service_completed_successfully
       controller:
         condition: service_healthy
     healthcheck:

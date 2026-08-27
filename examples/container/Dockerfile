@@ -5,6 +5,8 @@ RUN npm install --global npm@11.12.1 --ignore-scripts
 COPY package.json package-lock.json tsconfig.json ./
 COPY scripts/verify-lockfile.mjs ./scripts/verify-lockfile.mjs
 COPY packages ./packages
+COPY examples/container/init-volumes.sh /usr/local/bin/dsh-init-volumes
+RUN chmod 0755 /usr/local/bin/dsh-init-volumes
 RUN node scripts/verify-lockfile.mjs && npm ci --ignore-scripts && npm run build
 
 FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS runtime
@@ -17,6 +19,7 @@ COPY --from=build /app/packages/controller/package.json ./packages/controller/pa
 COPY --from=build /app/packages/controller/lib ./packages/controller/lib
 COPY --from=build /app/packages/proxy/package.json ./packages/proxy/package.json
 COPY --from=build /app/packages/proxy/lib ./packages/proxy/lib
+COPY --from=build /usr/local/bin/dsh-init-volumes /usr/local/bin/dsh-init-volumes
 RUN mkdir -p /run/dsh-docker-services /run/dsh-docker-services-proxy /var/lib/dsh-docker-services /var/lib/dsh-audit-checkpoint && chown -R node:node /run/dsh-docker-services /run/dsh-docker-services-proxy /var/lib/dsh-docker-services /var/lib/dsh-audit-checkpoint
 USER node
 ENTRYPOINT ["node", "packages/controller/lib/src/main.js"]
