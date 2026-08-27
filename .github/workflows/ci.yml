@@ -37,8 +37,10 @@ jobs:
       - run: docker image inspect dsh-docker-services:test --format '{{json .Config.Entrypoint}} {{.Config.User}}'
       # Local Compose preserves host ownership for file-backed secrets. Run the
       # disposable lifecycle as root so CI exercises the supported root-owned
-      # secret path instead of trusting the hosted runner's variable UID.
-      - run: sudo --preserve-env=PATH npm run test:compose-volumes
+      # secret path instead of trusting the hosted runner's variable UID. Pass
+      # the setup-node PATH explicitly because sudo otherwise selects Ubuntu's
+      # unrelated system Node/npm toolchain.
+      - run: sudo env "PATH=$PATH" node scripts/compose-volume-test.mjs
   sbom:
     needs: [verify, container]
     runs-on: ubuntu-latest
